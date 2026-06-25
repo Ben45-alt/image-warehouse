@@ -32,8 +32,11 @@
 ## ▶️ เหลือทำต่อ
 
 1. ✅ **เปลี่ยนรหัสผ่านแล้ว** (2026-06-25): `APP_PASSWORD` เปลี่ยนจาก `1234` เป็นรหัสใหม่ใน `.streamlit/secrets.toml` — ยืนยันด้วย AppTest ว่า login รหัสใหม่ผ่าน / รหัสเก่าใช้ไม่ได้แล้ว
-2. ⏳ **Deploy** ขึ้น Streamlit Community Cloud (วิธีอยู่ใน `README.md`) — *เจ้าของเลือก "ยังไม่ deploy ตอนนี้" ใช้รันผ่าน `start.bat` ในเครื่องไปก่อน*
-   - ตอนจะ deploy: ต้องเอาเนื้อหา `.streamlit/secrets.toml` ไปวางใน Secrets ของ Streamlit Cloud ด้วย
+2. ✅ **Deploy เสร็จสมบูรณ์ (2026-06-25)** 🎉
+   - Live: **https://image-warehouse-mis.streamlit.app/**
+   - โค้ด: https://github.com/Ben45-alt/image-warehouse (public, ไม่มีไฟล์ลับ)
+   - Secrets วางใน Streamlit Cloud แล้ว
+   - OAuth consent screen = **Production** → refresh token ไม่หมดอายุ 7 วัน
 
 > หมายเหตุ: ตอนนี้พร้อมใช้งานเต็มรูปแบบบนเครื่องแล้ว — ดับเบิลคลิก `start.bat` → login ด้วยรหัสใหม่ → ใช้ได้ครบ 3 หน้า
 
@@ -64,6 +67,39 @@
 - แก้: เพิ่ม `_retry()` ลองใหม่อัตโนมัติเมื่อเจอ ConnectionError/TimeoutError (1.5s,3s,4.5s) + ใส่ `num_retries=5` ใน Drive API
 - ครอบ `upload_to_drive` (create + permission, seek buffer ก่อน retry กันอัปไฟล์เปล่า) และ `append_row`
 - ยืนยัน: retry กู้คืนได้จริง / error ที่ไม่ใช่เน็ตไม่ถูก retry / อัปโหลดจริงยังทำงานปกติ
+
+---
+
+## ➕ ฟีเจอร์ที่เพิ่มหลัง deploy
+
+**(2026-06-25) ปุ่มลบรูป ในหน้าคลังภาพ** (`page_gallery.py`, `google_utils.py`)
+- แต่ละรูปมีปุ่ม **🗑️ ลบรูปนี้** → กดแล้วถามยืนยัน (✅ ลบเลย / ❌ ยกเลิก) กันกดพลาด
+- ลบ = ลบไฟล์ใน Drive + ลบแถวใน Sheet (หาแถวจากคอลัมน์ "ลิงก์รูป" ที่ไม่ซ้ำกัน) ผ่าน `delete_photo()`
+- ยืนยันแล้ว: round-trip ลบจริงครบ (Drive หาย + แถวหาย + ไม่มีตกค้าง) + กริดเรนเดอร์ปกติ
+
+---
+
+## ℹ️ ข้อควรรู้เรื่อง Hosting (Streamlit Community Cloud) — อ่านเมื่อสงสัย
+
+**ฟรีไหม / ต้องต่ออายุไหม?**
+- ✅ **ฟรีถาวร** สำหรับ public app — ไม่ต้องใส่บัตร ไม่มีค่ารายเดือน ไม่มีวันหมดอายุ ไม่ต้องต่ออายุ
+- เงื่อนไข: repo บน GitHub ต้องยังอยู่และเป็น public (https://github.com/Ben45-alt/image-warehouse)
+
+**แอป "หลับ" (sleep) — ปกติ ไม่ใช่แอปพัง**
+- ถ้าไม่มีคนเข้าสักพัก แอปจะหลับเพื่อประหยัดทรัพยากร
+- พอมีคนเปิดลิงก์อีกครั้ง จะ "ตื่น" เอง รอ ~30 วิ–1 นาที (บูตใหม่) แล้วใช้ได้ปกติ
+- ถ้าทิ้งไว้นานมากๆ (เป็นเดือน) Streamlit อาจส่งอีเมลถามว่ายังใช้อยู่ไหม → กดยืนยัน/reboot ในเมลก็กลับมา
+
+**ฝั่ง Google (สำคัญกว่า)**
+- OAuth consent screen = **Production** แล้ว → refresh token ไม่หมดอายุตามเวลา
+- ⚠️ Google จะเพิกถอน token ถ้า **ไม่ถูกใช้เลยเกิน 6 เดือน** → ถ้าใช้งานปกติไม่ต้องห่วง
+- รูปเก็บใน Google Drive ของ `tfp.data.mis@gmail.com` (ฟรี 15 GB) → ถ้ารูปเยอะค่อยขยายทีหลัง
+
+**อัปเดตแอปออนไลน์ยังไง?**
+- แก้โค้ดในเครื่อง → `git add` → `git commit` → `git push` → Streamlit Cloud จะ redeploy ให้เองอัตโนมัติ
+
+**ถ้าจะเปลี่ยน Secrets (เช่น เปลี่ยนรหัสผ่าน / refresh token ใหม่)**
+- ต้องแก้ **2 ที่**: ไฟล์ `.streamlit/secrets.toml` ในเครื่อง + Secrets ใน Streamlit Cloud (App → Settings → Secrets)
 
 ---
 
