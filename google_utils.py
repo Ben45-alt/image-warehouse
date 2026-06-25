@@ -120,6 +120,30 @@ def append_row(row_values: list):
     _retry(lambda: ws.append_row(row_values, value_input_option="USER_ENTERED"))
 
 
+def delete_photo(file_id: str, link: str):
+    """
+    ลบรูป 1 รายการ = ลบไฟล์ใน Drive + ลบแถวข้อมูลใน Sheet
+    - หาแถวใน Sheet จากคอลัมน์ "ลิงก์รูป" (คอลัมน์ที่ 7) เพราะลิงก์ไม่ซ้ำกัน (ชื่อไฟล์อาจซ้ำได้ถ้าอัปวินาทีเดียวกัน)
+    - ถ้าไฟล์ใน Drive ถูกลบไปแล้ว ก็ข้ามไปลบแถวต่อ ไม่ให้พังทั้งกระบวนการ
+    """
+    # 1) ลบไฟล์ใน Drive
+    if file_id:
+        try:
+            service = get_drive_service()
+            _retry(lambda: service.files().delete(fileId=file_id).execute(num_retries=5))
+        except Exception:
+            pass  # ไฟล์อาจไม่มีแล้ว ไม่เป็นไร ไปลบแถวใน Sheet ต่อ
+
+    # 2) ลบแถวใน Sheet (คอลัมน์ 7 = ลิงก์รูป)
+    ws = get_worksheet()
+    try:
+        cell = ws.find(link, in_column=7)
+    except Exception:
+        cell = None
+    if cell:
+        _retry(lambda: ws.delete_rows(cell.row))
+
+
 @st.cache_data(ttl=60)
 def load_data() -> pd.DataFrame:
     """

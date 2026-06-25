@@ -11,7 +11,9 @@ import streamlit as st
 import pandas as pd
 
 from config import DEPARTMENTS, CATEGORIES
-from google_utils import load_data, download_file_bytes, extract_file_id, get_image_bytes
+from google_utils import (
+    load_data, download_file_bytes, extract_file_id, get_image_bytes, delete_photo,
+)
 
 PAGE_SIZE = 12          # จำนวนรูปต่อหน้า
 COLS_PER_ROW = 4        # จำนวนรูปต่อแถว
@@ -135,3 +137,24 @@ def render():
                 # ปุ่มดาวน์โหลดรูปเดี่ยว (เปิดลิงก์ดาวน์โหลดตรงจาก Drive)
                 download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
                 st.link_button("⬇️ ดาวน์โหลดรูปนี้", download_url, width="stretch")
+
+                # ปุ่มลบรูป (มีขั้นยืนยันก่อน กันกดพลาด) — ใช้ file_id เป็น key กันชนกันในกริด
+                del_key = f"confirm_del_{file_id}"
+                if st.session_state.get(del_key):
+                    st.warning("⚠️ ลบรูปนี้ถาวร?")
+                    yes, no = st.columns(2)
+                    if yes.button("✅ ลบเลย", key=f"yes_{file_id}", width="stretch"):
+                        try:
+                            delete_photo(file_id, item["ลิงก์รูป"])
+                            st.session_state.pop(del_key, None)
+                            st.cache_data.clear()  # ล้าง cache ให้รายการหายทันที
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"ลบไม่สำเร็จ: {e}")
+                    if no.button("❌ ยกเลิก", key=f"no_{file_id}", width="stretch"):
+                        st.session_state.pop(del_key, None)
+                        st.rerun()
+                else:
+                    if st.button("🗑️ ลบรูปนี้", key=f"del_{file_id}", width="stretch"):
+                        st.session_state[del_key] = True
+                        st.rerun()
