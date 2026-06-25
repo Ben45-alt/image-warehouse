@@ -1,0 +1,20 @@
+# ===== ไฟล์ลับ ห้าม commit ขึ้น GitHub เด็ดขาด =====
+.streamlit/secrets.toml
+client_secret*.json
+token.json
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# ===== ระบบปฏิบัติการ =====
+.DS_Store
+Thumbs.db
+
+# ===== ไฟล์ส่วนตัว/เครื่องมือ ไม่ต้องขึ้น repo =====
+link_google.txt
+.claude/

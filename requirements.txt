@@ -1,0 +1,10 @@
+# ===== ไลบรารีทั้งหมดของโปรเจกต์คลังภาพ =====
+# ติดตั้งครั้งเดียวด้วยคำสั่ง:  pip install -r requirements.txt
+
+streamlit                 # ตัวทำเว็บแอป
+gspread                   # อ่าน/เขียน Google Sheets แบบง่ายๆ
+google-auth               # ระบบยืนยันตัวตน (OAuth) ของ Google
+google-auth-oauthlib      # ใช้ตอนรันสคริปต์ขอ refresh token (ครั้งเดียว)
+google-api-python-client  # ใช้คุยกับ Google Drive (อัปโหลดรูป)
+Pillow                    # ย่อ/บีบอัดรูป
+pandas                    # จัดการตารางข้อมูล + ทำ Dashboard
