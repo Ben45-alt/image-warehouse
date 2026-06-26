@@ -1,0 +1,233 @@
+# -*- coding: utf-8 -*-
+"""
+auth.py — ฟังก์ชันเกี่ยวกับ "รหัสลับ" สำหรับระบบกิจกรรม
+ใช้ hash รหัส (รหัสกิจกรรม / รหัส admin) ก่อนเก็บลง Google Sheet — ไม่เก็บรหัสจริง
+
+วิธี hash: sha256 ของ (salt + รหัสจริง)
+- salt เก็บไว้ใน st.secrets["HASH_SALT"] (ไม่ฮาร์ดโค้ดลงโค้ด)
+- salt ตั้งครั้งเดียวแล้วห้ามเปลี่ยน ไม่งั้น hash เก่าในชีตจะเทียบไม่ตรงทั้งหมด
+"""
+
+import hashlib
+import hmac
+
+import streamlit as st
+
+
+def _get_salt() -> str:
+    """อ่าน salt จาก secrets (ถ้าลืมตั้งจะ error ชัดเจน ให้รู้ว่าต้องเพิ่มใน secrets)"""
+    try:
+        return st.secrets["HASH_SALT"]
+    except Exception:
+        raise RuntimeError(
+            "ไม่พบ HASH_SALT ใน secrets — ต้องเพิ่มบรรทัด HASH_SALT = \"...\" "
+            "ใน .streamlit/secrets.toml (และใน Secrets ของ Streamlit Cloud)"
+        )
+
+
+def hash_secret(plain: str) -> str:
+    """แปลงรหัสจริง → hash (เก็บลงชีต). คืนสตริง hex 64 ตัว"""
+    salted = (_get_salt() + str(plain)).encode("utf-8")
+    return hashlib.sha256(salted).hexdigest()
+
+
+def verify_secret(plain: str, hashed: str) -> bool:
+    """ตรวจว่ารหัสที่กรอก (plain) ตรงกับ hash ที่เก็บไว้ไหม — เทียบแบบกัน timing attack"""
+    if not hashed:
+        return False
+    return hmac.compare_digest(hash_secret(plain), str(hashed))
+
+
+# ===========================================================================
+# ระบบ Session + Login (ใช้ในหน้าแรก/router ของแอป)
+# role ที่เป็นไปได้: None(ยังไม่ login) / "general" / "user" / "admin" / "superuser"
+# ===========================================================================
+
+def ensure_session():
+    """ตั้งค่าเริ่มต้นให้ session_state (เรียกทุกครั้งตอนเปิดแอป)"""
+    st.session_state.setdefault("view", None)      # หน้า login ที่กำลังเลือกอยู่ (general/user/staff)
+    st.session_state.setdefault("role", None)      # สิทธิ์หลัง login
+    st.session_state.setdefault("identity", {})    # ข้อมูลตัวตน (ชื่อ/username/กิจกรรม)
+
+
+def logout():
+    """ออกจากระบบ — ล้างทุกอย่างกลับไปหน้าแรก"""
+    st.session_state["view"] = None
+    st.session_state["role"] = None
+    st.session_state["identity"] = {}
+    st.rerun()
+
+
+def render_topbar_logout(label: str = "", show_refresh: bool = False):
+    """แถบบนสุด: ข้อความตัวตน (ซ้าย) + ปุ่มรีเฟรช/ออกจากระบบ (ขวา) — ใช้ในหน้าที่ไม่มี sidebar"""
+    left, mid, right = st.columns([6, 2, 2])
+    left.markdown(f"#### {label}")
+    if show_refresh and mid.button("🔄 รีเฟรชข้อมูล", width="stretch", key="topbar_refresh"):
+        st.cache_data.clear()
+        st.rerun()
+    if right.button("🚪 ออกจากระบบ", width="stretch", key="topbar_logout"):
+        logout()
+    st.divider()
+
+
+def find_open_activity(code_plain: str):
+    """หากิจกรรมที่ 'เปิด' อยู่และรหัสตรงกับที่กรอก — คืน dict ของกิจกรรม หรือ None"""
+    import google_utils as gu  # import แบบ lazy กัน circular import
+    df = gu.load_activities()
+    if df.empty:
+        return None
+    code_hash = hash_secret(code_plain)
+    for _, r in df.iterrows():
+        if str(r.get("รหัสเข้า_hash")) == code_hash and str(r.get("สถานะ")) == "เปิด":
+            return r.to_dict()
+    return None
+
+
+# ---------- ฟอร์ม login แต่ละแบบ ----------
+def _login_general():
+    """คลังภาพทั่วไป (ระบบเดิม) — ใช้ APP_PASSWORD"""
+    with st.form("login_general"):
+        pw = st.text_input("รหัสผ่านคลังภาพ", type="password")
+        ok = st.form_submit_button("เข้าสู่ระบบ", width="stretch")
+    if ok:
+        if pw == st.secrets["APP_PASSWORD"]:
+            st.session_state["role"] = "general"
+            st.session_state["view"] = None
+            st.rerun()
+        else:
+            st.error("❌ รหัสผ่านไม่ถูกต้อง")
+
+
+def _login_user():
+    """
+    ผู้เข้าร่วมกิจกรรม — เลือกชื่อกิจกรรมที่ 'เปิด' อยู่ (dropdown) + กรอกรหัส + ชื่อ
+    โชว์เฉพาะกิจกรรมที่เปิด ; ต้องกรอกรหัสให้ตรงกับ "กิจกรรมที่เลือก" ถึงจะเข้าได้
+    (รองรับหลายกิจกรรมเปิดพร้อมกัน — เลือกอันที่จะเข้าได้ชัดเจน)
+    """
+    import google_utils as gu  # lazy import กัน circular import
+
+    df = gu.load_activities()
+    open_acts = (
+        df[df["สถานะ"].astype(str) == "เปิด"]
+        if (not df.empty and "สถานะ" in df.columns) else df.iloc[0:0]
+    )
+    if open_acts.empty:
+        st.info("ตอนนี้ยังไม่มีกิจกรรมที่เปิดอยู่ — ติดต่อหัวหน้า/ผู้ดูแลให้เปิดกิจกรรมก่อน")
+        return
+
+    # ใช้ activity_id เป็น "ค่าจริง" ของ dropdown (ไม่ซ้ำกันแน่นอน กันชื่อกิจกรรมซ้ำ) แต่โชว์เป็นชื่อ
+    ids = list(open_acts["activity_id"].astype(str))
+    id2name = dict(zip(ids, open_acts["ชื่อกิจกรรม"].astype(str)))
+    id2hash = dict(zip(ids, open_acts["รหัสเข้า_hash"].astype(str)))
+
+    with st.form("login_user"):
+        sel_id = st.selectbox("เลือกกิจกรรม", ids, format_func=lambda i: id2name.get(i, i))
+        code = st.text_input("รหัสกิจกรรม")
+        name = st.text_input("ชื่อของคุณ")
+        ok = st.form_submit_button("เข้าร่วมกิจกรรม", width="stretch")
+    if not ok:
+        return
+
+    if not code.strip() or not name.strip():
+        st.error("⚠️ กรอกรหัสกิจกรรมและชื่อให้ครบ")
+        return
+    # รหัสต้องตรงกับ "กิจกรรมที่เลือก" เท่านั้น (กันกรอกรหัสกิจกรรมอื่นแล้วหลุดเข้าผิดอัน)
+    if not verify_secret(code.strip(), id2hash.get(sel_id)):
+        st.error("❌ รหัสไม่ตรงกับกิจกรรมที่เลือก")
+        return
+
+    st.session_state["role"] = "user"
+    st.session_state["identity"] = {
+        "name": name.strip(),
+        "activity_id": sel_id,
+        "activity_name": id2name.get(sel_id, ""),
+    }
+    st.session_state["view"] = None
+    st.rerun()
+
+
+def _login_staff():
+    """admin หรือ superuser — username + password"""
+    import google_utils as gu
+    with st.form("login_staff"):
+        u = st.text_input("ชื่อผู้ใช้ (username)")
+        p = st.text_input("รหัสผ่าน", type="password")
+        ok = st.form_submit_button("เข้าสู่ระบบ", width="stretch")
+    if not ok:
+        return
+
+    username = u.strip()
+
+    # 1) เช็ค superuser ก่อน (รหัสอยู่ใน secrets, เก็บเป็น plain ได้เพราะ secrets ปลอดภัย)
+    su_user = st.secrets.get("SUPERUSER_USER", "")
+    su_pass = st.secrets.get("SUPERUSER_PASS", "")
+    if username and username == su_user and hmac.compare_digest(p, su_pass):
+        st.session_state["role"] = "superuser"
+        st.session_state["identity"] = {"username": username}
+        st.session_state["view"] = None
+        st.rerun()
+        return
+
+    # 2) เช็ค admin จากแท็บ Users (รหัสเก็บเป็น hash)
+    acct = gu.find_user(username)
+    if (
+        acct
+        and str(acct.get("สถานะ")) == "ใช้งาน"
+        and str(acct.get("role")) == "admin"
+        and verify_secret(p, acct.get("password_hash"))
+    ):
+        st.session_state["role"] = "admin"
+        st.session_state["identity"] = {
+            "username": username,
+            "fullname": acct.get("ชื่อ-นามสกุล", ""),
+        }
+        st.session_state["view"] = None
+        st.rerun()
+        return
+
+    st.error("❌ ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
+
+
+def render_landing():
+    """หน้าแรก: เลือกประเภทการเข้าใช้ → แสดงฟอร์ม login ที่เลือก"""
+    view = st.session_state.get("view")
+
+    # ----- ยังไม่เลือก = โชว์ 3 การ์ดให้เลือก -----
+    if view is None:
+        st.title("📷 คลังภาพกลางของบริษัท")
+        st.caption("เลือกประเภทการเข้าใช้งาน")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("### 📁 คลังภาพทั่วไป")
+            st.write("พนักงานทั่วไป — ส่ง/ค้นหารูปตามแผนก")
+            if st.button("เข้าคลังภาพทั่วไป", width="stretch", key="b_general"):
+                st.session_state["view"] = "general"
+                st.rerun()
+        with c2:
+            st.markdown("### 🎯 เข้าร่วมกิจกรรม")
+            st.write("มีรหัสกิจกรรม — เข้าถ่ายรูปส่ง")
+            if st.button("เข้าร่วมกิจกรรม", width="stretch", key="b_user"):
+                st.session_state["view"] = "user"
+                st.rerun()
+        with c3:
+            st.markdown("### 🔐 เข้าสู่ระบบ")
+            st.write("admin / ผู้ดูแลระบบ")
+            if st.button("เข้าสู่ระบบ", width="stretch", key="b_staff"):
+                st.session_state["view"] = "staff"
+                st.rerun()
+        return
+
+    # ----- เลือกแล้ว = ปุ่มย้อนกลับ + ฟอร์ม login -----
+    if st.button("← กลับหน้าแรก", key="back_landing"):
+        st.session_state["view"] = None
+        st.rerun()
+
+    if view == "general":
+        st.subheader("📁 เข้าคลังภาพทั่วไป")
+        _login_general()
+    elif view == "user":
+        st.subheader("🎯 เข้าร่วมกิจกรรม")
+        _login_user()
+    elif view == "staff":
+        st.subheader("🔐 เข้าสู่ระบบ (admin / ผู้ดูแล)")
+        _login_staff()

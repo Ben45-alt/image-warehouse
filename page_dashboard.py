@@ -13,13 +13,13 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
 
-from google_utils import load_data
+from google_utils import load_general_data
 
 
 def render():
     st.subheader("📊 Dashboard ภาพรวม")
 
-    df = load_data()
+    df = load_general_data()   # เฉพาะคลังทั่วไป (กันรูปกิจกรรมทำตัวเลขเพี้ยน)
     if df.empty:
         st.info("ยังไม่มีข้อมูล — เพิ่มรูปก่อนที่หน้า '📤 ส่งรูป'")
         return

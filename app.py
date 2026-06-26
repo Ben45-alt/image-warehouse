@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-คลังภาพกลางของบริษัท — ไฟล์หลักของแอป
-เฟส 2: ระบบ login ด้วยรหัสผ่าน + โครง 3 หน้า (ส่งรูป / คลังภาพ / Dashboard)
+คลังภาพกลางของบริษัท — ไฟล์หลักของแอป (router)
+
+โครงสร้างใหม่: หน้าแรก (landing) ให้เลือก 3 ทางเข้า แล้ว route ตามสิทธิ์ (role)
+- general   = คลังภาพทั่วไป (ระบบเดิม 3 หน้า) — ใช้ APP_PASSWORD
+- user      = ผู้เข้าร่วมกิจกรรม (รหัสกิจกรรม + ชื่อ)
+- admin     = หัวหน้า (username + password จากแท็บ Users)
+- superuser = ผู้ดูแลระบบ (username + password จาก secrets)
+
+ระบบเดิม (คลังภาพทั่วไป) ไม่ถูกแก้ logic — แค่ย้ายมาอยู่หลังการเลือก "คลังภาพทั่วไป"
 """
 
 import streamlit as st
@@ -10,6 +17,10 @@ from google_utils import check_connection
 import page_upload
 import page_gallery
 import page_dashboard
+import page_activity_user
+import page_activity_admin
+import page_activity_superuser
+import auth
 
 # ตั้งค่าหน้าเว็บ (ต้องเป็นคำสั่ง streamlit แรกสุด)
 st.set_page_config(
@@ -20,39 +31,11 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------------------------
-# ระบบ Login ด้วยรหัสผ่าน (อ่านรหัสจาก st.secrets กันคนนอก)
+# คลังภาพทั่วไป (ระบบเดิม) — sidebar สถานะ + 3 แท็บ (ส่งรูป/คลังภาพ/Dashboard)
 # ---------------------------------------------------------------------------
-def check_password() -> bool:
-    """คืน True ถ้า login ผ่านแล้ว, ถ้ายังไม่ผ่านจะแสดงช่องกรอกรหัสและคืน False"""
-
-    # ถ้าเคย login ผ่านในรอบนี้แล้ว ไม่ต้องถามซ้ำ
-    if st.session_state.get("logged_in"):
-        return True
-
-    st.title("🔒 เข้าสู่ระบบคลังภาพ")
-
-    # ใช้ st.form เพื่อให้ "กด Enter" ในช่องรหัสผ่าน = กดปุ่มเข้าสู่ระบบ ได้ทันที
-    with st.form("login_form"):
-        password = st.text_input("กรอกรหัสผ่าน", type="password")
-        submitted = st.form_submit_button("เข้าสู่ระบบ")
-
-    if submitted:
-        if password == st.secrets["APP_PASSWORD"]:
-            st.session_state["logged_in"] = True
-            st.rerun()  # โหลดหน้าใหม่ เข้าสู่แอป
-        else:
-            st.error("❌ รหัสผ่านไม่ถูกต้อง")
-
-    return False
-
-
-# ---------------------------------------------------------------------------
-# ส่วนหลักของแอป (จะทำงานก็ต่อเมื่อ login ผ่านแล้วเท่านั้น)
-# ---------------------------------------------------------------------------
-def main():
+def render_general_warehouse():
     st.title("📷 คลังภาพกลางของบริษัท")
 
-    # แถบด้านข้าง: สถานะการเชื่อมต่อ + ปุ่มออกจากระบบ
     with st.sidebar:
         st.header("⚙️ สถานะระบบ")
         try:
@@ -66,24 +49,50 @@ def main():
             st.rerun()
 
         if st.button("🚪 ออกจากระบบ"):
-            st.session_state["logged_in"] = False
-            st.rerun()
+            auth.logout()
 
-    # 3 หน้า ด้วย st.tabs
     tab_upload, tab_gallery, tab_dashboard = st.tabs(
         ["📤 ส่งรูป", "🖼️ คลังภาพ", "📊 Dashboard"]
     )
-
     with tab_upload:
         page_upload.render()
-
     with tab_gallery:
         page_gallery.render()
-
     with tab_dashboard:
         page_dashboard.render()
 
 
-# เริ่มทำงาน: เช็ค login ก่อน ถ้าผ่านค่อยเข้า main()
-if check_password():
-    main()
+# ---------------------------------------------------------------------------
+# Router หลัก — ดูสิทธิ์แล้วพาไปหน้าที่ถูกต้อง
+# ---------------------------------------------------------------------------
+def main():
+    auth.ensure_session()
+    role = st.session_state.get("role")
+    ident = st.session_state.get("identity", {})
+
+    # ยังไม่ login → หน้าแรก
+    if not role:
+        auth.render_landing()
+        return
+
+    if role == "general":
+        render_general_warehouse()
+
+    elif role == "user":
+        auth.render_topbar_logout(
+            f"🎯 กิจกรรม: {ident.get('activity_name','')} · คุณ: {ident.get('name','')}"
+        )
+        page_activity_user.render()
+
+    elif role == "admin":
+        auth.render_topbar_logout(f"🛠️ admin: {ident.get('fullname') or ident.get('username','')}")
+        page_activity_admin.render()
+
+    elif role == "superuser":
+        auth.render_topbar_logout(
+            f"👑 superuser: {ident.get('username','')}", show_refresh=True
+        )
+        page_activity_superuser.render()
+
+
+main()

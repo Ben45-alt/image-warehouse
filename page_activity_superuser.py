@@ -1,0 +1,417 @@
+# -*- coding: utf-8 -*-
+"""
+page_activity_superuser.py — หน้าของ "ผู้ดูแลระบบ / superuser" (role = superuser)
+superuser เห็น/จัดการได้ทุกอย่าง มี 5 แท็บ:
+  1) 📊 Dashboard       — พื้นที่ Google Drive (15GB) + ภาพรวมกิจกรรม + กิจกรรมที่ต้องดูแล
+  2) 🎯 จัดการกิจกรรม    — สร้างกิจกรรมเอง + เปิด/ปิดได้ทุกกิจกรรม (ของทุก admin)
+  3) 🖼️ คลังภาพทุกกิจกรรม — เห็นรูปของ "ทุก" admin/กิจกรรม + ดาวน์โหลด/ลบ
+  4) 👥 จัดการบัญชี admin  — สร้าง/ปิด/ลบบัญชี admin (เขียนลงแท็บ Users)
+  5) 📁 คลังภาพทั่วไป (เดิม) — เข้าระบบเก่า 3 หน้าได้ (ส่งรูป/คลังภาพ/Dashboard)
+
+หมายเหตุ layout: หน้านี้ไม่มี sidebar — ปุ่มรีเฟรช/ออกจากระบบอยู่ที่ top bar (จัดการใน app.py)
+"""
+
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+import streamlit as st
+import pandas as pd
+
+import auth
+from google_utils import (
+    load_activities, load_users, load_data,
+    add_user, set_user_status, delete_user, find_user,
+    set_activity_status,
+    get_storage_quota, get_image_bytes, extract_file_id, delete_photo,
+)
+from page_gallery import build_zip, COLS_PER_ROW
+# reuse ตรรกะ "สร้างกิจกรรม" จากหน้า admin (กันรหัสซ้ำ/สุ่มรหัส/โชว์รหัสให้ก๊อป) จะได้ไม่เขียนซ้ำ
+from page_activity_admin import _create_activity
+
+import page_upload
+import page_gallery
+import page_dashboard
+
+# 15 GB อ้างอิง (เผื่อบางบัญชี API ไม่คืน limit มา จะได้มีตัวหารสำรอง)
+_DEFAULT_LIMIT = 15 * (1024 ** 3)
+
+
+def _gb(num_bytes) -> float:
+    """แปลง bytes → GB (ทศนิยม)"""
+    return (num_bytes or 0) / (1024 ** 3)
+
+
+def render():
+    tab_dash, tab_act, tab_gallery, tab_admin, tab_general = st.tabs(
+        ["📊 Dashboard", "🎯 จัดการกิจกรรม", "🖼️ คลังภาพทุกกิจกรรม",
+         "👥 จัดการบัญชี admin", "📁 คลังภาพทั่วไป"]
+    )
+    with tab_dash:
+        _render_dashboard()
+    with tab_act:
+        _render_manage_activities()
+    with tab_gallery:
+        _render_all_gallery()
+    with tab_admin:
+        _render_admin_accounts()
+    with tab_general:
+        _render_general()
+
+
+# ==========================================================================
+# แท็บ 1: Dashboard (เฉพาะ superuser)
+# ==========================================================================
+def _render_dashboard():
+    activities = load_activities()
+    photos = load_data()
+    # รูปของ "กิจกรรม" = แถวที่ activity_id มีค่า (ไม่ว่าง) ; ที่เหลือคือคลังทั่วไปเดิม
+    act_photos = _activity_photos(photos)
+
+    # ---------- ส่วนที่ 1: พื้นที่ Google Drive ----------
+    st.subheader("☁️ พื้นที่ Google Drive")
+    try:
+        q = get_storage_quota()
+        used = q["used"]
+        limit = q["limit"] or _DEFAULT_LIMIT
+        free = max(0, limit - used)
+        ratio = min(1.0, used / limit) if limit else 0.0
+        st.progress(ratio, text=f"ใช้ไป {_gb(used):.2f} GB / {_gb(limit):.0f} GB ({ratio*100:.1f}%)")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("ใช้ไปแล้ว", f"{_gb(used):.2f} GB")
+        c2.metric("เหลือ", f"{_gb(free):.2f} GB")
+        # ขนาดเฉลี่ยต่อรูป (ประมาณจากพื้นที่ใช้จริง ÷ จำนวนรูปทั้งหมดในคลัง)
+        total_photos = len(photos)
+        avg_mb = (used / total_photos / (1024 ** 2)) if total_photos else 0
+        c3.metric("รูปทั้งหมด", f"{total_photos:,}", help=f"เฉลี่ย ~{avg_mb:.2f} MB/รูป (ประมาณ)")
+    except Exception as e:
+        st.error(f"ดึงข้อมูลพื้นที่ Drive ไม่ได้: {e}")
+
+    st.divider()
+
+    # ---------- ส่วนที่ 2: ภาพรวมกิจกรรม ----------
+    st.subheader("🎯 ภาพรวมกิจกรรม")
+    open_count = _open_count(activities)
+    admins = load_users()
+    admin_count = 0
+    if not admins.empty and "สถานะ" in admins.columns:
+        admin_count = int((admins["สถานะ"].astype(str) == "ใช้งาน").sum())
+
+    # รูปกิจกรรมเดือนนี้
+    now = datetime.now(ZoneInfo("Asia/Bangkok"))
+    month_photos = 0
+    if not act_photos.empty:
+        dt = pd.to_datetime(act_photos["วันเวลา"], errors="coerce")
+        month_photos = int(((dt.dt.year == now.year) & (dt.dt.month == now.month)).sum())
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🟢 กิจกรรมที่เปิดอยู่", open_count)
+    c2.metric("🆕 รูปกิจกรรมเดือนนี้", month_photos)
+    c3.metric("👤 admin ที่ใช้งาน", admin_count)
+
+    # ตารางกิจกรรม: ชื่อ · คนสร้าง · จำนวนรูป (มาก→น้อย)
+    st.markdown("**ตารางกิจกรรม (เรียงตามจำนวนรูปมากไปน้อย)**")
+    if activities.empty:
+        st.caption("ยังไม่มีกิจกรรมในระบบ")
+    else:
+        counts = _counts_by_activity(act_photos)
+        table = activities.copy()
+        table["จำนวนรูป"] = table["activity_id"].astype(str).map(counts).fillna(0).astype(int)
+        show = table[["ชื่อกิจกรรม", "คนสร้าง", "สถานะ", "จำนวนรูป"]] \
+            .sort_values("จำนวนรูป", ascending=False)
+        st.dataframe(show, width="stretch", hide_index=True)
+
+    st.divider()
+
+    # ---------- ส่วนที่ 3: กิจกรรมที่ต้องดูแล (แจ้งเตือน) ----------
+    st.subheader("🔔 กิจกรรมที่ต้องดูแล")
+    if activities.empty:
+        st.caption("— ไม่มี —")
+        return
+
+    last_dt = _last_photo_dt(act_photos)            # activity_id -> วันเวลารูปล่าสุด (Timestamp/NaT)
+    counts = _counts_by_activity(act_photos)
+    cutoff = now.replace(tzinfo=None) - timedelta(days=30)
+
+    empty_open, stale_open = [], []
+    for _, a in activities.iterrows():
+        if str(a.get("สถานะ")) != "เปิด":
+            continue
+        aid = str(a["activity_id"])
+        n = int(counts.get(aid, 0))
+        if n == 0:
+            empty_open.append(a["ชื่อกิจกรรม"])
+        else:
+            latest = last_dt.get(aid)
+            if latest is not None and pd.notna(latest) and latest < cutoff:
+                days = (now.replace(tzinfo=None) - latest).days
+                stale_open.append(f"{a['ชื่อกิจกรรม']} (ล่าสุด {days} วันก่อน)")
+
+    if not empty_open and not stale_open:
+        st.success("✅ ทุกกิจกรรมที่เปิดอยู่มีความเคลื่อนไหวปกติ")
+    if empty_open:
+        st.warning("📭 เปิดแล้วยังไม่มีรูปเลย: " + " · ".join(empty_open))
+    if stale_open:
+        st.warning("🕸️ เปิดค้างนาน ไม่มีรูปใหม่เกิน 30 วัน: " + " · ".join(stale_open))
+
+
+# ==========================================================================
+# แท็บ 2: จัดการกิจกรรม (superuser สร้างเอง + เปิด/ปิดได้ทุกกิจกรรม)
+# ==========================================================================
+def _render_manage_activities():
+    su = st.session_state.get("identity", {}).get("username", "superuser")
+
+    # กล่องโชว์รหัสกิจกรรมที่เพิ่งสร้าง (ใช้ session key เดียวกับหน้า admin — reuse _create_activity)
+    last = st.session_state.get("admin_last_code")
+    if last:
+        st.success(f"✅ สร้างกิจกรรม “{last['name']}” แล้ว — แจกรหัสนี้ให้ผู้เข้าร่วม:")
+        st.code(last["code"], language=None)
+        if st.button("รับทราบ / ปิดข้อความนี้", key="su_dismiss_code"):
+            del st.session_state["admin_last_code"]
+            st.rerun()
+
+    with st.expander("➕ สร้างกิจกรรมใหม่", expanded=not last):
+        with st.form("su_create_activity", clear_on_submit=True):
+            name = st.text_input("ชื่อกิจกรรม")
+            code = st.text_input("รหัสเข้ากิจกรรม (เว้นว่าง = สุ่มให้อัตโนมัติ)")
+            ok = st.form_submit_button("สร้างกิจกรรม", width="stretch")
+        if ok:
+            _create_activity(su, name, code)   # creator = username ของ superuser
+
+    st.divider()
+
+    # รายการ "ทุก" กิจกรรมในระบบ (ของทุก admin) + เปิด/ปิดได้
+    st.markdown("**กิจกรรมทั้งหมดในระบบ**")
+    df = load_activities()
+    if df.empty:
+        st.info("ยังไม่มีกิจกรรม — สร้างอันแรกด้านบนได้เลย")
+        return
+
+    counts = _counts_by_activity(_activity_photos(load_data()))
+    for _, a in df.iterrows():
+        aid = str(a["activity_id"])
+        n = int(counts.get(aid, 0))
+        c1, c2 = st.columns([6, 2])
+        c1.markdown(
+            f"**{a['ชื่อกิจกรรม']}**  \n"
+            f"สถานะ: {a['สถานะ']} · 🛠️ {a.get('คนสร้าง','?')} · {n} รูป · สร้างเมื่อ {a.get('วันที่สร้าง','')}"
+        )
+        if str(a["สถานะ"]) == "เปิด":
+            if c2.button("⏸️ ปิดกิจกรรม", key=f"su_close_{aid}", width="stretch"):
+                set_activity_status(aid, "ปิด")
+                st.rerun()
+        else:
+            if c2.button("▶️ เปิดกิจกรรม", key=f"su_open_{aid}", width="stretch"):
+                set_activity_status(aid, "เปิด")
+                st.rerun()
+
+
+# ==========================================================================
+# แท็บ 3: คลังภาพทุกกิจกรรม (ของทุก admin)
+# ==========================================================================
+def _render_all_gallery():
+    st.subheader("🖼️ คลังภาพทุกกิจกรรม")
+
+    activities = load_activities()
+    photos = load_data()
+    sub = _activity_photos(photos)
+    if sub.empty:
+        st.info("ยังไม่มีรูปกิจกรรมในระบบ")
+        return
+
+    # map activity_id -> ชื่อกิจกรรม / คนสร้าง (ไว้โชว์ใต้รูป + ทำตัวกรอง)
+    id2name, id2creator = {}, {}
+    if not activities.empty:
+        id2name = dict(zip(activities["activity_id"].astype(str), activities["ชื่อกิจกรรม"].astype(str)))
+        id2creator = dict(zip(activities["activity_id"].astype(str), activities["คนสร้าง"].astype(str)))
+
+    # ตัวกรอง: เลือกกิจกรรม
+    names = ["ทั้งหมด"] + (list(activities["ชื่อกิจกรรม"]) if not activities.empty else [])
+    sel = st.selectbox("เลือกกิจกรรม", names, key="su_sel_act")
+    if sel != "ทั้งหมด":
+        sel_ids = {k for k, v in id2name.items() if v == sel}
+        sub = sub[sub["activity_id"].astype(str).isin(sel_ids)]
+    if sub.empty:
+        st.info("ยังไม่มีรูปในกิจกรรมที่เลือก")
+        return
+
+    sub["_dt"] = pd.to_datetime(sub["วันเวลา"], errors="coerce")
+    sub = sub.sort_values("_dt", ascending=False)
+    st.markdown(f"**พบ {len(sub)} รูป**")
+
+    # ZIP ทั้งหมดที่กรอง
+    if st.button("📦 เตรียมไฟล์ ZIP", key="su_zip_btn"):
+        with st.spinner("กำลังรวมรูปเป็นไฟล์ ZIP..."):
+            items = tuple(
+                (extract_file_id(r["ลิงก์รูป"]), r["ชื่อไฟล์"]) for _, r in sub.iterrows()
+            )
+            st.session_state["su_zip_bytes"] = build_zip(items)
+    if st.session_state.get("su_zip_bytes"):
+        st.download_button("⬇️ ดาวน์โหลด .zip", data=st.session_state["su_zip_bytes"],
+                           file_name="all_activities.zip", mime="application/zip", key="su_zip_dl")
+
+    st.divider()
+
+    rows = sub.to_dict("records")
+    for i in range(0, len(rows), COLS_PER_ROW):
+        cols = st.columns(COLS_PER_ROW)
+        for col, item in zip(cols, rows[i:i + COLS_PER_ROW]):
+            with col:
+                file_id = extract_file_id(item["ลิงก์รูป"])
+                try:
+                    st.image(get_image_bytes(file_id), width="stretch")
+                except Exception:
+                    st.caption("⚠️ โหลดรูปไม่ได้")
+                aid = str(item.get("activity_id"))
+                st.caption(
+                    f"🎯 {id2name.get(aid, aid)} · 🛠️ {id2creator.get(aid, '?')}  \n"
+                    f"👤 {item.get('ผู้ส่ง','')} · 🗓️ {item.get('วันเวลา','')}"
+                )
+                download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+                st.link_button("⬇️ ดาวน์โหลด", download_url, width="stretch")
+
+                # ลบรูป (มีขั้นยืนยัน)
+                del_key = f"su_confirm_del_{file_id}"
+                if st.session_state.get(del_key):
+                    st.warning("⚠️ ลบรูปนี้ถาวร?")
+                    y, no = st.columns(2)
+                    if y.button("✅ ลบเลย", key=f"su_yes_{file_id}", width="stretch"):
+                        try:
+                            delete_photo(file_id, item["ลิงก์รูป"])
+                            st.session_state.pop(del_key, None)
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"ลบไม่สำเร็จ: {e}")
+                    if no.button("❌ ยกเลิก", key=f"su_no_{file_id}", width="stretch"):
+                        st.session_state.pop(del_key, None)
+                        st.rerun()
+                else:
+                    if st.button("🗑️ ลบรูปนี้", key=f"su_del_{file_id}", width="stretch"):
+                        st.session_state[del_key] = True
+                        st.rerun()
+
+
+# ==========================================================================
+# แท็บ 4: จัดการบัญชี admin
+# ==========================================================================
+def _render_admin_accounts():
+    st.subheader("👥 จัดการบัญชี admin")
+
+    # ---- ฟอร์มสร้างบัญชีใหม่ ----
+    with st.expander("➕ สร้างบัญชี admin ใหม่", expanded=True):
+        with st.form("create_admin", clear_on_submit=True):
+            username = st.text_input("username (ชื่อผู้ใช้ login)")
+            fullname = st.text_input("ชื่อ-นามสกุล")
+            pw = st.text_input("รหัสผ่าน", type="password")
+            ok = st.form_submit_button("สร้างบัญชี", width="stretch")
+        if ok:
+            _create_admin(username, fullname, pw)
+
+    st.divider()
+
+    # ---- รายชื่อบัญชี admin ----
+    admins = load_users()
+    if admins.empty:
+        st.info("ยังไม่มีบัญชี admin — สร้างอันแรกด้านบนได้เลย")
+        return
+
+    st.markdown("**รายชื่อบัญชี admin ทั้งหมด**")
+    for _, u in admins.iterrows():
+        uname = str(u["username"])
+        status = str(u.get("สถานะ", ""))
+        c1, c2, c3 = st.columns([5, 2, 2])
+        c1.markdown(
+            f"**{uname}** · {u.get('ชื่อ-นามสกุล','')}  \n"
+            f"role: {u.get('role','admin')} · สถานะ: {status}"
+        )
+        # ปุ่มเปิด/ปิด (พักการใช้งานชั่วคราว — ข้อมูลยังอยู่)
+        if status == "ใช้งาน":
+            if c2.button("⏸️ ปิดบัญชี", key=f"su_disable_{uname}", width="stretch"):
+                set_user_status(uname, "ปิด")
+                st.rerun()
+        else:
+            if c2.button("▶️ เปิดใช้งาน", key=f"su_enable_{uname}", width="stretch"):
+                set_user_status(uname, "ใช้งาน")
+                st.rerun()
+
+        # ปุ่มลบถาวร (มีขั้นยืนยันก่อน กันกดพลาด)
+        del_key = f"su_confirm_deluser_{uname}"
+        if st.session_state.get(del_key):
+            st.warning(
+                f"⚠️ ลบบัญชี **{uname}** ถาวร? "
+                "(กิจกรรมที่บัญชีนี้เคยสร้างและรูปยังอยู่ครบ ไม่ถูกลบ)"
+            )
+            y, no = st.columns(2)
+            if y.button("✅ ลบเลย", key=f"su_deluser_yes_{uname}", width="stretch"):
+                delete_user(uname)
+                st.session_state.pop(del_key, None)
+                st.rerun()
+            if no.button("❌ ยกเลิก", key=f"su_deluser_no_{uname}", width="stretch"):
+                st.session_state.pop(del_key, None)
+                st.rerun()
+        else:
+            if c3.button("🗑️ ลบบัญชี", key=f"su_deluser_{uname}", width="stretch"):
+                st.session_state[del_key] = True
+                st.rerun()
+
+
+def _create_admin(username, fullname, pw):
+    username = (username or "").strip()
+    fullname = (fullname or "").strip()
+    if not username or not pw:
+        st.error("⚠️ กรอก username และรหัสผ่านให้ครบ")
+        return
+    if find_user(username):
+        st.error(f"❌ username “{username}” มีอยู่แล้ว — เปลี่ยนชื่อใหม่")
+        return
+    add_user(username, auth.hash_secret(pw), fullname, role="admin", status="ใช้งาน")
+    st.success(f"✅ สร้างบัญชี admin “{username}” แล้ว")
+    st.rerun()
+
+
+# ==========================================================================
+# แท็บ 5: คลังภาพทั่วไป (ระบบเดิม) — reuse 3 หน้าเดิม
+# ==========================================================================
+def _render_general():
+    st.subheader("📁 คลังภาพทั่วไป (ระบบเดิม)")
+    st.caption("superuser เข้าถึงคลังเก่าได้เต็มรูปแบบ")
+    sub_up, sub_gal, sub_dash = st.tabs(["📤 ส่งรูป", "🖼️ คลังภาพ", "📊 Dashboard"])
+    with sub_up:
+        page_upload.render()
+    with sub_gal:
+        page_gallery.render()
+    with sub_dash:
+        page_dashboard.render()
+
+
+# ==========================================================================
+# helper
+# ==========================================================================
+def _activity_photos(photos: pd.DataFrame) -> pd.DataFrame:
+    """กรองเฉพาะรูปที่เป็นของ 'กิจกรรม' (activity_id ไม่ว่าง)"""
+    if photos.empty or "activity_id" not in photos.columns:
+        return photos.iloc[0:0] if not photos.empty else pd.DataFrame()
+    aid = photos["activity_id"].astype(str).str.strip()
+    return photos[aid != ""].copy()
+
+
+def _counts_by_activity(act_photos: pd.DataFrame) -> dict:
+    """นับจำนวนรูปต่อ activity_id — คืน dict {activity_id: count}"""
+    if act_photos.empty:
+        return {}
+    return act_photos["activity_id"].astype(str).value_counts().to_dict()
+
+
+def _last_photo_dt(act_photos: pd.DataFrame) -> dict:
+    """วันเวลารูปล่าสุดต่อ activity_id — คืน dict {activity_id: Timestamp}"""
+    if act_photos.empty:
+        return {}
+    tmp = act_photos.copy()
+    tmp["_dt"] = pd.to_datetime(tmp["วันเวลา"], errors="coerce")
+    return tmp.groupby(tmp["activity_id"].astype(str))["_dt"].max().to_dict()
+
+
+def _open_count(activities: pd.DataFrame) -> int:
+    if activities.empty or "สถานะ" not in activities.columns:
+        return 0
+    return int((activities["สถานะ"].astype(str) == "เปิด").sum())

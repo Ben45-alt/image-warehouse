@@ -12,7 +12,7 @@ import pandas as pd
 
 from config import DEPARTMENTS, CATEGORIES
 from google_utils import (
-    load_data, download_file_bytes, extract_file_id, get_image_bytes, delete_photo,
+    load_general_data, download_file_bytes, extract_file_id, get_image_bytes, delete_photo,
 )
 
 PAGE_SIZE = 12          # จำนวนรูปต่อหน้า
@@ -40,7 +40,7 @@ def build_zip(items: tuple) -> bytes:
 def render():
     st.subheader("🖼️ คลังภาพ")
 
-    df = load_data()
+    df = load_general_data()   # เฉพาะคลังทั่วไป (กันรูปกิจกรรมหลุดมาปน)
     if df.empty:
         st.info("ยังไม่มีรูปในคลัง — ไปที่หน้า '📤 ส่งรูป' เพื่อเพิ่มรูปแรกได้เลย")
         return

@@ -120,6 +120,15 @@ def append_row(row_values: list):
     _retry(lambda: ws.append_row(row_values, value_input_option="USER_ENTERED"))
 
 
+def append_activity_row(datetime_str, sender, link, filename, activity_id):
+    """
+    บันทึกรูปที่ส่งผ่าน "กิจกรรม" ลง Sheet เดิม (reuse append_row)
+    ลำดับคอลัมน์: วันเวลา, แผนก, หมวด, ชื่อเรื่อง, แท็ก, ผู้ส่ง, ลิงก์รูป, ชื่อไฟล์, activity_id
+    → แผนก/หมวด/ชื่อเรื่อง/แท็ก ปล่อยว่าง (เป็นรูปของกิจกรรม ไม่ใช่คลังทั่วไป)
+    """
+    append_row([datetime_str, "", "", "", "", sender, link, filename, activity_id])
+
+
 def delete_photo(file_id: str, link: str):
     """
     ลบรูป 1 รายการ = ลบไฟล์ใน Drive + ลบแถวข้อมูลใน Sheet
@@ -156,6 +165,19 @@ def load_data() -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def load_general_data() -> pd.DataFrame:
+    """
+    ข้อมูลเฉพาะ "คลังภาพทั่วไป" (ระบบเดิม) = แถวที่ activity_id ว่าง/ไม่มีค่า
+    ใช้ในหน้าเดิม (คลังภาพ + Dashboard) เพื่อกัน "รูปกิจกรรม" (ที่แผนก/หมวดว่าง) หลุดมาโผล่ปนกัน
+    ถ้าชีตยังไม่มีคอลัมน์ activity_id (ข้อมูลเก่าล้วน) ก็คืนทั้งหมดตามเดิม
+    """
+    df = load_data()
+    if df.empty or ACTIVITY_ID_HEADER not in df.columns:
+        return df
+    is_general = df[ACTIVITY_ID_HEADER].astype(str).str.strip() == ""
+    return df[is_general].copy()
+
+
 def download_file_bytes(file_id: str) -> bytes:
     """ดาวน์โหลดไฟล์รูปจาก Drive มาเป็น bytes (ใช้ตอนทำไฟล์ ZIP)"""
     service = get_drive_service()
@@ -189,3 +211,156 @@ def extract_file_id(link: str) -> str:
         return m.group(1)
     m = re.search(r"id=([A-Za-z0-9_-]+)", str(link))
     return m.group(1) if m else ""
+
+
+# ===========================================================================
+# ระบบกิจกรรม (Activity) — โครงข้อมูลใหม่ ทำงานคู่กับของเดิม (ไม่แก้ของเดิม)
+# ===========================================================================
+
+ACTIVITY_ID_HEADER = "activity_id"                 # คอลัมน์ที่ 9 เพิ่มใน sheet1
+ACTIVITIES_TAB = "Activities"                      # แท็บเก็บรายการกิจกรรม
+USERS_TAB = "Users"                                # แท็บเก็บบัญชี admin
+ACTIVITIES_HEADER = [
+    "activity_id", "ชื่อกิจกรรม", "รหัสเข้า_hash", "คนสร้าง", "วันที่สร้าง", "สถานะ",
+]
+USERS_HEADER = ["username", "password_hash", "ชื่อ-นามสกุล", "role", "สถานะ"]
+
+
+@st.cache_resource
+def get_spreadsheet():
+    """เปิด Google Spreadsheet (ทั้งไฟล์) — ใช้สำหรับเข้าถึงแท็บอื่นๆ"""
+    gc = gspread.authorize(get_credentials())
+    return gc.open_by_url(st.secrets["SHEET_URL"])
+
+
+def _ensure_tab(ss, title: str, header: list):
+    """สร้างแท็บถ้ายังไม่มี + ใส่หัวตารางถ้ายังว่าง (idempotent เรียกซ้ำได้ปลอดภัย)"""
+    try:
+        ws = ss.worksheet(title)
+    except gspread.WorksheetNotFound:
+        ws = ss.add_worksheet(title=title, rows=200, cols=max(10, len(header)))
+    if not ws.row_values(1):  # ยังไม่มีหัวตาราง → ใส่ให้
+        ws.append_row(header, value_input_option="USER_ENTERED")
+    return ws
+
+
+def ensure_schema():
+    """
+    เตรียมโครงข้อมูลให้พร้อมสำหรับระบบกิจกรรม (เรียกครั้งเดียว/ซ้ำได้ ไม่ทำของเดิมพัง):
+    1) เพิ่มคอลัมน์ activity_id ต่อท้าย sheet1 (ถ้ายังไม่มี)
+    2) สร้างแท็บ Activities (ถ้ายังไม่มี)
+    3) สร้างแท็บ Users (ถ้ายังไม่มี)
+    """
+    ss = get_spreadsheet()
+    ws = ss.sheet1
+    header = ws.row_values(1)
+    if ACTIVITY_ID_HEADER not in header:
+        ws.update_cell(1, len(header) + 1, ACTIVITY_ID_HEADER)  # ต่อท้ายคอลัมน์สุดท้าย
+    _ensure_tab(ss, ACTIVITIES_TAB, ACTIVITIES_HEADER)
+    _ensure_tab(ss, USERS_TAB, USERS_HEADER)
+
+
+@st.cache_resource
+def get_activities_ws():
+    """worksheet ของแท็บ Activities (ต้องเรียก ensure_schema มาก่อนแล้ว)"""
+    return get_spreadsheet().worksheet(ACTIVITIES_TAB)
+
+
+@st.cache_resource
+def get_users_ws():
+    """worksheet ของแท็บ Users"""
+    return get_spreadsheet().worksheet(USERS_TAB)
+
+
+def _find_row(ws, value, col: int):
+    """หาเลขแถวในแท็บ จากค่าในคอลัมน์ที่กำหนด — คืน None ถ้าไม่เจอ"""
+    try:
+        cell = ws.find(str(value), in_column=col)
+    except Exception:
+        cell = None
+    return cell.row if cell else None
+
+
+# ---------- Activities ----------
+@st.cache_data(ttl=60)
+def load_activities() -> pd.DataFrame:
+    """อ่านรายการกิจกรรมทั้งหมดเป็น DataFrame (cache 60 วิ)"""
+    return pd.DataFrame(get_activities_ws().get_all_records())
+
+
+def add_activity(activity_id, name, code_hash, creator, created_date, status="เปิด"):
+    """เพิ่มกิจกรรมใหม่ 1 รายการ (รหัสเข้าเก็บเป็น hash แล้ว)"""
+    ws = get_activities_ws()
+    _retry(lambda: ws.append_row(
+        [activity_id, name, code_hash, creator, created_date, status],
+        value_input_option="USER_ENTERED",
+    ))
+    load_activities.clear()  # ล้าง cache เพื่อให้รายการใหม่ขึ้นทันที
+
+
+def set_activity_status(activity_id, status):
+    """เปลี่ยนสถานะกิจกรรม (เปิด/ปิด) — หาแถวจาก activity_id (คอลัมน์ 1) แก้คอลัมน์ 6"""
+    ws = get_activities_ws()
+    row = _find_row(ws, activity_id, 1)
+    if row:
+        _retry(lambda: ws.update_cell(row, 6, status))
+        load_activities.clear()
+
+
+# ---------- Users (บัญชี admin) ----------
+@st.cache_data(ttl=60)
+def load_users() -> pd.DataFrame:
+    """อ่านบัญชี admin ทั้งหมดเป็น DataFrame (cache 60 วิ)"""
+    return pd.DataFrame(get_users_ws().get_all_records())
+
+
+def add_user(username, password_hash, fullname, role="admin", status="ใช้งาน"):
+    """เพิ่มบัญชี admin (รหัสเก็บเป็น hash แล้ว)"""
+    ws = get_users_ws()
+    _retry(lambda: ws.append_row(
+        [username, password_hash, fullname, role, status],
+        value_input_option="USER_ENTERED",
+    ))
+    load_users.clear()  # ล้าง cache เพื่อให้บัญชีใหม่ขึ้นทันที
+
+
+def set_user_status(username, status):
+    """เปลี่ยนสถานะบัญชี (ใช้งาน/ปิด) — หาแถวจาก username (คอลัมน์ 1) แก้คอลัมน์ 5"""
+    ws = get_users_ws()
+    row = _find_row(ws, username, 1)
+    if row:
+        _retry(lambda: ws.update_cell(row, 5, status))
+        load_users.clear()
+
+
+def delete_user(username):
+    """ลบบัญชี admin ออกจากแท็บ Users ถาวร — หาแถวจาก username (คอลัมน์ 1) แล้วลบทั้งแถว"""
+    ws = get_users_ws()
+    row = _find_row(ws, username, 1)
+    if row and row > 1:  # กันเผลอลบแถวหัวตาราง (แถว 1)
+        _retry(lambda: ws.delete_rows(row))
+        load_users.clear()
+
+
+def find_user(username):
+    """หาบัญชี admin จาก username — คืน dict ของแถวนั้น หรือ None ถ้าไม่เจอ"""
+    df = load_users()
+    if df.empty:
+        return None
+    m = df[df["username"].astype(str) == str(username)]
+    return m.iloc[0].to_dict() if not m.empty else None
+
+
+# ---------- โควตา Google Drive (ใช้ในหน้า Dashboard superuser) ----------
+def get_storage_quota() -> dict:
+    """
+    ดึงพื้นที่ Google Drive จริงจาก API (about.get → storageQuota)
+    คืน dict: used / limit / free (หน่วยเป็น bytes) — limit/free เป็น None ถ้าบัญชีไม่จำกัดพื้นที่
+    """
+    service = get_drive_service()
+    about = _retry(lambda: service.about().get(fields="storageQuota").execute())
+    q = about.get("storageQuota", {})
+    used = int(q.get("usage", 0))
+    limit = int(q["limit"]) if q.get("limit") else None
+    free = (limit - used) if limit is not None else None
+    return {"used": used, "limit": limit, "free": free}
