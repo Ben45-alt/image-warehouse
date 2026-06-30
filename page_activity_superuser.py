@@ -21,7 +21,7 @@ import auth
 from google_utils import (
     load_activities, load_users, load_data,
     add_user, set_user_status, delete_user, find_user,
-    set_activity_status,
+    set_activity_status, delete_activity,
     get_storage_quota, get_image_bytes, extract_file_id, delete_photo,
 )
 from page_gallery import build_zip, COLS_PER_ROW
@@ -190,7 +190,7 @@ def _render_manage_activities():
     for _, a in df.iterrows():
         aid = str(a["activity_id"])
         n = int(counts.get(aid, 0))
-        c1, c2 = st.columns([6, 2])
+        c1, c2, c3 = st.columns([5, 2, 2])
         c1.markdown(
             f"**{a['ชื่อกิจกรรม']}**  \n"
             f"สถานะ: {a['สถานะ']} · 🛠️ {a.get('คนสร้าง','?')} · {n} รูป · สร้างเมื่อ {a.get('วันที่สร้าง','')}"
@@ -202,6 +202,31 @@ def _render_manage_activities():
         else:
             if c2.button("▶️ เปิดกิจกรรม", key=f"su_open_{aid}", width="stretch"):
                 set_activity_status(aid, "เปิด")
+                st.rerun()
+
+        # ลบกิจกรรม "ถาวร" (superuser เท่านั้น) — มีขั้นยืนยัน + เตือนว่ารูปทั้งหมดจะถูกลบด้วย
+        del_key = f"su_confirm_delact_{aid}"
+        if st.session_state.get(del_key):
+            st.error(
+                f"⚠️ ลบกิจกรรม **{a['ชื่อกิจกรรม']}** ถาวร? "
+                f"รูปทั้งหมด **{n} รูป** จะถูกลบทั้งใน Google Drive และ Sheet — กู้คืนไม่ได้"
+            )
+            y, no = st.columns(2)
+            if y.button("✅ ลบกิจกรรม + รูปทั้งหมด", key=f"su_delact_yes_{aid}", width="stretch"):
+                try:
+                    with st.spinner("กำลังลบกิจกรรมและรูปทั้งหมด..."):
+                        delete_activity(aid)
+                    st.session_state.pop(del_key, None)
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"ลบไม่สำเร็จ: {e}")
+            if no.button("❌ ยกเลิก", key=f"su_delact_no_{aid}", width="stretch"):
+                st.session_state.pop(del_key, None)
+                st.rerun()
+        else:
+            if c3.button("🗑️ ลบกิจกรรม", key=f"su_delact_{aid}", width="stretch"):
+                st.session_state[del_key] = True
                 st.rerun()
 
 

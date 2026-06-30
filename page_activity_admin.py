@@ -18,7 +18,7 @@ import pandas as pd
 
 import auth
 from google_utils import (
-    load_activities, add_activity, set_activity_status,
+    load_activities, add_activity, set_activity_status, delete_activity,
     load_data, get_image_bytes, extract_file_id, delete_photo,
 )
 from page_gallery import build_zip, COLS_PER_ROW
@@ -88,7 +88,7 @@ def _render_activities(username):
     for _, a in mine.iterrows():
         aid = str(a["activity_id"])
         n = _count_photos(photos, aid)
-        c1, c2 = st.columns([6, 2])
+        c1, c2, c3 = st.columns([5, 2, 2])
         c1.markdown(
             f"**{a['ชื่อกิจกรรม']}**  \n"
             f"สถานะ: {a['สถานะ']} · {n} รูป · สร้างเมื่อ {a['วันที่สร้าง']}"
@@ -101,6 +101,38 @@ def _render_activities(username):
             if c2.button("▶️ เปิดกิจกรรม", key=f"open_{aid}", width="stretch"):
                 set_activity_status(aid, "เปิด")
                 st.rerun()
+
+        # ลบกิจกรรม — admin ลบได้ "เฉพาะกิจกรรมที่ยังไม่มีรูป" (ไว้แก้ตอนสร้างผิด)
+        # ถ้ามีรูปแล้วลบไม่ได้ ต้องให้ superuser ลบ (กันเผลอลบรูปของลูกน้องหลุดมือ)
+        if n > 0:
+            c3.button("🗑️ ลบกิจกรรม", key=f"adm_delact_{aid}", width="stretch",
+                      disabled=True, help="มีรูปแล้ว ลบไม่ได้ — แจ้ง superuser ให้ลบแทน")
+        else:
+            del_key = f"adm_confirm_delact_{aid}"
+            if st.session_state.get(del_key):
+                st.warning(f"⚠️ ลบกิจกรรม **{a['ชื่อกิจกรรม']}** ถาวร? (ยังไม่มีรูปในกิจกรรมนี้)")
+                y, no = st.columns(2)
+                if y.button("✅ ลบเลย", key=f"adm_delact_yes_{aid}", width="stretch"):
+                    try:
+                        # อ่านสดอีกครั้ง กันมีรูปเพิ่งถูกส่งเข้ามาหลังหน้าโหลด → ถ้ามีรูปแล้ว admin ลบไม่ได้
+                        load_data.clear()
+                        if _count_photos(load_data(), aid) > 0:
+                            st.error("❌ มีรูปเข้ามาในกิจกรรมนี้แล้ว — ลบไม่ได้ ต้องให้ superuser ลบ")
+                            st.session_state.pop(del_key, None)
+                        else:
+                            delete_activity(aid)
+                            st.session_state.pop(del_key, None)
+                            st.cache_data.clear()
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"ลบไม่สำเร็จ: {e}")
+                if no.button("❌ ยกเลิก", key=f"adm_delact_no_{aid}", width="stretch"):
+                    st.session_state.pop(del_key, None)
+                    st.rerun()
+            else:
+                if c3.button("🗑️ ลบกิจกรรม", key=f"adm_delact_{aid}", width="stretch"):
+                    st.session_state[del_key] = True
+                    st.rerun()
 
 
 def _create_activity(username, name, code):

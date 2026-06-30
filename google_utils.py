@@ -307,6 +307,34 @@ def set_activity_status(activity_id, status):
         load_activities.clear()
 
 
+def delete_activity(activity_id):
+    """
+    ลบกิจกรรม "ถาวร" (สำหรับ superuser เท่านั้น — ปุ่มอยู่เฉพาะหน้า superuser):
+      1) ลบรูปทุกใบของกิจกรรมนี้ — ไฟล์ใน Drive + แถวใน Sheet1 (ผ่าน delete_photo)
+      2) ลบแถวกิจกรรมในแท็บ Activities (คอลัมน์ 1 = activity_id)
+    คืน "จำนวนรูปที่ลบ" ไว้แจ้งผล. หารูปจากคอลัมน์ activity_id ใน Sheet1
+    """
+    activity_id = str(activity_id).strip()
+    df = load_data()
+    deleted = 0
+    if not df.empty and ACTIVITY_ID_HEADER in df.columns and "ลิงก์รูป" in df.columns:
+        mine = df[df[ACTIVITY_ID_HEADER].astype(str).str.strip() == activity_id]
+        for link in mine["ลิงก์รูป"].tolist():
+            # delete_photo หาแถวจาก "ลิงก์" ใหม่ทุกครั้ง → เลขแถวเลื่อนหลังลบก็ไม่พลาด
+            delete_photo(extract_file_id(link), link)
+            deleted += 1
+
+    # ลบแถวกิจกรรมในแท็บ Activities
+    aws = get_activities_ws()
+    row = _find_row(aws, activity_id, 1)
+    if row and row > 1:  # กันเผลอลบแถวหัวตาราง (แถว 1)
+        _retry(lambda: aws.delete_rows(row))
+
+    load_data.clear()
+    load_activities.clear()
+    return deleted
+
+
 # ---------- Users (บัญชี admin) ----------
 @st.cache_data(ttl=60)
 def load_users() -> pd.DataFrame:
