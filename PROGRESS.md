@@ -22,7 +22,12 @@
 
 **หมายเหตุต้นเหตุ (2026-07-03):** consent screen เป็น "In production" อยู่แล้ว → **ไม่ใช่**เรื่องหมดอายุ 7 วัน. สาเหตุที่น่าจะเป็น = ออก refresh token ใหม่บ่อยจน Google ตัด token เก่าสุดทิ้ง (มีลิมิตต่อ client/บัญชี) หรือมีเหตุการณ์ความปลอดภัยของบัญชี. **บทเรียน: อย่ารัน `get_refresh_token.py` พร่ำเพรื่อ** — รันเฉพาะตอนจำเป็นจริง เพราะทุกครั้งที่ออกใหม่เสี่ยงเบียด token เก่าให้ถูกถอน
 
-**ยังพิจารณาทำ (กันเชิงรุก):** keep-alive ping เว็บทุกวัน (cron-job.org ฟรี) → กัน token ถูกถอนเพราะไม่ถูกใช้นานๆ + แถมแก้อาการมือถือ cold start; และปรับแอปให้โชว์ข้อความสวยๆ บอกวิธีแก้แทนจอ error ดิบ
+**✅ ทำแล้ว (กันเชิงรุก, 2026-07-03): keep-alive ด้วย GitHub Actions** — ไฟล์ `.github/workflows/keep-alive.yml` ping `https://image-warehouse-mis.streamlit.app/healthz` ทุก ~10 นาที ช่วง 00:00-11:59 UTC (07:00-18:59 เวลาไทย) ทุกวัน → กันแอปหลับ (ลด cold start มือถือ + token ถูกใช้สม่ำเสมอ). ฟรีเพราะ repo public.
+- ⚠️ ต้องใช้ `/healthz` (คืน 200 ตรง) — `/` และ `/_stcore/health` โดน 303 redirect ไป `share.streamlit.io/-/auth` (curl ตามไม่ได้เพราะไม่มีเบราว์เซอร์/JS)
+- ⚠️ GitHub ปิด scheduled workflow อัตโนมัติถ้า repo เงียบ (ไม่มี commit) เกิน 60 วัน → เข้าแท็บ Actions กด "Enable workflow" อีกครั้งถ้าเงียบนาน
+- ยืนยันแล้ว: กดรันเอง (workflow_dispatch) → `GET /healthz -> HTTP 200` สำเร็จ
+
+**ยังพิจารณาทำต่อ:** ปรับแอปให้โชว์ข้อความสวยๆ บอกวิธีแก้แทนจอ error ดิบ ถ้า token พังอีก
 
 ---
 
