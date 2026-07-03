@@ -26,9 +26,10 @@ jobs:
           echo "Pinging $URL ..."
           # ยิงหน้าเว็บ + health endpoint ของ Streamlit ลองซ้ำได้ถ้าพลาดชั่วคราว
           for path in "/" "/_stcore/health"; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" \
-              --retry 3 --retry-delay 5 --max-time 60 \
+            # -L = ตาม redirect (303) ต่อจนถึงตัวแอปจริง เพื่อให้ถือเป็นทราฟฟิกจริง
+            code=$(curl -s -L -o /dev/null -w "%{http_code}" \
+              --retry 3 --retry-delay 5 --max-time 90 \
               -A "keep-alive-bot" "$URL$path" || echo "000")
-            echo "GET $path -> HTTP $code"
+            echo "GET $path -> HTTP $code (final)"
           done
           echo "done"
