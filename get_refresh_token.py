@@ -40,7 +40,7 @@ def main():
     creds = flow.run_local_server(
         port=0,
         access_type="offline",
-        prompt="consent",
+        prompt="select_account consent",
     )
 
     # แสดงค่าที่ต้องเก็บไว้

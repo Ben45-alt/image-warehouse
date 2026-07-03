@@ -1,0 +1,34 @@
+# Keep-alive: ping เว็บเป็นระยะ เพื่อไม่ให้ Streamlit Community Cloud "หลับ"
+# ผลที่ได้: คนเปิดเว็บ/ถ่ายรูปมือถือแล้วไม่ต้องรอบูตใหม่ (cold start) + token ถูกใช้สม่ำเสมอ
+# ฟรี 100% เพราะ repo เป็น public (GitHub Actions ไม่จำกัดนาทีสำหรับ repo public)
+#
+# หมายเหตุ:
+# - เวลาใน cron เป็น UTC. ไทย = UTC+7 → 00:00-11:xx UTC = 07:00-18:xx เวลาไทย
+# - GitHub อาจดีเลย์รอบ schedule ได้บ้าง (ไม่เป๊ะทุก 10 นาที) แต่พอสำหรับกันหลับ
+# - ⚠️ ถ้า repo ไม่มี commit ใหม่เลยเกิน 60 วัน GitHub จะปิด workflow นี้อัตโนมัติ
+#   → ถ้าเงียบนานให้เข้าแท็บ Actions กด "Enable workflow" อีกครั้ง
+
+name: keep-alive
+
+on:
+  schedule:
+    # ทุก ~10 นาที ช่วง 00:00-11:59 UTC (07:00-18:59 เวลาไทย) ทุกวัน
+    - cron: "*/10 0-11 * * *"
+  workflow_dispatch: {}   # เผื่อกดรันเองจากแท็บ Actions เพื่อทดสอบ
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping app (wake / keep awake)
+        run: |
+          URL="https://image-warehouse-mis.streamlit.app"
+          echo "Pinging $URL ..."
+          # ยิงหน้าเว็บ + health endpoint ของ Streamlit ลองซ้ำได้ถ้าพลาดชั่วคราว
+          for path in "/" "/_stcore/health"; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              --retry 3 --retry-delay 5 --max-time 60 \
+              -A "keep-alive-bot" "$URL$path" || echo "000")
+            echo "GET $path -> HTTP $code"
+          done
+          echo "done"

@@ -4,6 +4,28 @@
 
 ---
 
+## 🆘 กู้คืนด่วน: เว็บเชื่อม Google ไม่ได้ `invalid_grant: Token has been expired or revoked` (runbook)
+
+> เกิดครั้งแรก 2026-07-03 (ตอนกำลัง present) — refresh token ถูก Google เพิกถอน เว็บดูรูปไม่ได้ทั้งหมด
+> กู้คืนเสร็จใน ~5 นาที ทำตามนี้ครั้งหน้าจะเร็วกว่าเดิม:
+
+**อาการ:** เปิดเว็บแล้วขึ้น error เชื่อม Google ไม่ได้ `('invalid_grant: Token has been expired or revoked.')` — ทุกหน้าที่ต้องอ่านรูป/ชีตพัง
+
+**วิธีกู้ (5 ขั้น):**
+1. เปิด terminal ที่โฟลเดอร์โปรเจกต์ → รัน `python get_refresh_token.py` (สคริปต์บังคับเลือกบัญชีทุกครั้งแล้ว)
+2. เบราว์เซอร์เด้ง → **เลือกบัญชี `tfp.data.mis@gmail.com` เท่านั้น** (เจ้าของ Sheet/Drive — เลือกผิดบัญชีจะเข้าคลังไม่ได้) → ถ้าเจอ "Google hasn't verified this app" กด Advanced → Go to... (unsafe) → Allow ทุกหน้า
+3. ก๊อป `refresh_token = "..."` ที่ terminal พิมพ์ออกมา
+4. วาง 2 ที่:
+   - ไฟล์ `.streamlit/secrets.toml` (บรรทัด refresh_token ใต้ `[google_oauth]`)
+   - **Streamlit Cloud → แอป image-warehouse-mis → ⋮ Settings → Secrets** (บรรทัด refresh_token ใต้ `[google_oauth]`) → Save (แอป reboot เอง ~30 วิ)  ← **อันนี้คือตัวที่กู้เว็บจริง** local ไม่เกี่ยวกับเว็บ
+5. (ก่อน save cloud) ทดสอบ token ใหม่ในเครื่องก่อนได้: รันสคริปต์เล็กๆ เปิด Sheet + เช็ค `drive.about().get(fields='user')` ต้องได้อีเมล `tfp.data.mis@gmail.com` = เลือกบัญชีถูก
+
+**หมายเหตุต้นเหตุ (2026-07-03):** consent screen เป็น "In production" อยู่แล้ว → **ไม่ใช่**เรื่องหมดอายุ 7 วัน. สาเหตุที่น่าจะเป็น = ออก refresh token ใหม่บ่อยจน Google ตัด token เก่าสุดทิ้ง (มีลิมิตต่อ client/บัญชี) หรือมีเหตุการณ์ความปลอดภัยของบัญชี. **บทเรียน: อย่ารัน `get_refresh_token.py` พร่ำเพรื่อ** — รันเฉพาะตอนจำเป็นจริง เพราะทุกครั้งที่ออกใหม่เสี่ยงเบียด token เก่าให้ถูกถอน
+
+**ยังพิจารณาทำ (กันเชิงรุก):** keep-alive ping เว็บทุกวัน (cron-job.org ฟรี) → กัน token ถูกถอนเพราะไม่ถูกใช้นานๆ + แถมแก้อาการมือถือ cold start; และปรับแอปให้โชว์ข้อความสวยๆ บอกวิธีแก้แทนจอ error ดิบ
+
+---
+
 ## ✅ ทำเสร็จแล้ว
 
 | เฟส | งาน | สถานะ |
