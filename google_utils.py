@@ -248,8 +248,11 @@ def log_action(who: str, role: str, action: str, detail: str = "", activity_id: 
 # ---------------------------------------------------------------------------
 # auto-close กิจกรรม — ปิดอัตโนมัติเมื่อครบ 7 วันนับจากวันสร้าง (ตรวจตอนใช้งาน ไม่แก้ชีต)
 # ---------------------------------------------------------------------------
-def is_activity_expired(created, now=None, days: int = AUTO_CLOSE_DAYS) -> bool:
+def is_activity_expired(created, now=None, days: int = None) -> bool:
     """หมดอายุ auto-close หรือยัง (ครบ `days` วันนับจากวันสร้าง). parse วันไม่ได้ = ยังไม่หมด (กันปิดมั่ว)"""
+    # อ้าง AUTO_CLOSE_DAYS ตอนเรียก (ไม่ใช่ตอนนิยาม) — ค่าคงที่ถูกประกาศทีหลังในไฟล์
+    if days is None:
+        days = AUTO_CLOSE_DAYS
     dt = pd.to_datetime(str(created), errors="coerce")
     if pd.isna(dt):
         return False
