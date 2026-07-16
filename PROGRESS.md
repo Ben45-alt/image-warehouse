@@ -250,7 +250,17 @@
 
 **🔑 หมายเหตุ deploy:** เจอบั๊ก NameError รอบแรก (commit 53477fd แก้แล้ว) — `is_activity_expired(days=AUTO_CLOSE_DAYS)` อ้างค่าคงที่เป็น default arg ที่ประเมินตอนโหลดโมดูล แต่ค่าคงที่อยู่ทีหลังในไฟล์. **บทเรียน: local streamlit พัง (starlette/Py3.14) compile อย่างเดียวไม่จับ NameError → ใช้วิธีสตับ streamlit ปลอมแล้ว import จริงทุกโมดูลก่อน push ทุกครั้ง** (จับ load-time error ได้). สตับ + ใส่ st.secrets จริง = รัน ensure_schema ตัวจริง migrate ชีตได้โดยไม่ต้องเขียน migration ซ้ำ
 
-**⏳ รอทดสอบบนเว็บจริง (ทั้ง 3 รอบ):** ถ้า error → Reboot app. เทสต์: อัป(ชื่อไฟล์+metadata) · ลบ→ถังขยะ+กู้คืน · Log · แชร์อัลบั้มเฉพาะคน→เอารหัสไปเปิดหน้าดูอัลบั้ม · อัลบั้มสาธารณะ · pHash (ยังไม่มี UI เตือนซ้ำ = งานรอบถัดไป)
+**⏳ รอทดสอบบนเว็บจริง (ทั้ง 3 รอบ):** ถ้า error → Reboot app. เทสต์: อัป(ชื่อไฟล์+metadata) · ลบ→ถังขยะ+กู้คืน · Log · แชร์อัลบั้มเฉพาะคน→เอารหัสไปเปิดหน้าดูอัลบั้ม · อัลบั้มสาธารณะ
+
+**✅ landing 4 การ์ด (commit b3bcfbb):** คลังทั่วไป / ส่งรูปกิจกรรม / ดูอัลบั้ม / เข้าสู่ระบบ (แยกส่ง-ดู จบใน 1 คลิก)
+
+**✅ ตรวจรูปซ้ำ pHash — ครบข้อ 5 (commit 67fb614)** (`google_utils.py`, `page_upload.py`, `page_activity_user.py`, `page_activity_admin/superuser.py`)
+- **เตือนตอนอัป:** คำนวณ phash รูปใหม่ → เทียบในขอบเขตเดียวกัน (กิจกรรม=ในกิจกรรมนั้น / คลังทั่วไป=ในคลัง) Hamming<=5 = คล้าย → พักไว้ถามยืนยัน "จะส่งซ้ำไหม" (ใช้ session flash + pending confirm)
+- **สแกนหาซ้ำ:** ปุ่ม "🔍 หารูปซ้ำ" ใน gallery admin/superuser → `group_duplicates` (union-find) จัดกลุ่มรูปคล้ายกัน → เลือกลบใบซ้ำ (ลงถังขยะ)
+- `find_similar_photo` + `group_duplicates` ใน google_utils (import `hamming_distance` จาก image_utils) · ไม่ต้อง migrate schema (phash มีอยู่แล้ว)
+- ✅ ทดสอบ logic ในเครื่อง: find_similar เจอ/ไม่เจอถูก · group_duplicates จัดกลุ่มถูก · stub-import ทุกโมดูลผ่าน
+
+**🎉 แผนหลัก 5 ฟีเจอร์ครบแล้ว** · ถัดไปที่ผู้ใช้อยากได้: **QR Code รหัสกิจกรรม/รหัสดู** (ให้สแกนแทนพิมพ์)
 
 ---
 
