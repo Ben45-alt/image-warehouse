@@ -22,7 +22,7 @@ from google_utils import (
     load_data, load_active_data, load_trash_data,
     get_image_bytes, extract_file_id, trash_photo, restore_photo, log_action, is_activity_open,
     get_activity_visibility, set_activity_visibility, activity_shares, add_share, delete_share,
-    VIS_PUBLIC, VIS_PRIVATE,
+    VIS_PUBLIC, VIS_PRIVATE, group_duplicates,
 )
 from page_gallery import build_zip, COLS_PER_ROW
 
@@ -216,6 +216,8 @@ def _render_gallery(username):
         st.download_button("⬇️ ดาวน์โหลด .zip", data=st.session_state["adm_zip_bytes"],
                            file_name="activity_photos.zip", mime="application/zip", key="adm_zip_dl")
 
+    render_duplicate_scan(sub, "adm", username, "admin")
+
     st.divider()
 
     rows = sub.to_dict("records")
@@ -399,6 +401,47 @@ def render_share_panel(activity_id, activity_name, key_prefix):
                               width="stretch"):
                     delete_share(activity_id, name)
                     st.rerun()
+
+
+def render_duplicate_scan(df, key_prefix, deleted_by, role):
+    """
+    เครื่องมือสแกนหารูปซ้ำ (phash) ในชุดรูปที่กำลังดูอยู่ — ใช้ร่วมกัน admin/superuser
+    กดปุ่มแล้วจัดกลุ่มรูปที่คล้ายกัน โชว์ให้เลือกลบใบซ้ำ (ลงถังขยะ)
+    """
+    scan_key = f"{key_prefix}_dupscan"
+    if st.button("🔍 หารูปซ้ำในชุดนี้", key=f"{key_prefix}_dupscan_btn"):
+        st.session_state[scan_key] = True
+    if not st.session_state.get(scan_key):
+        return
+
+    groups = group_duplicates(df)
+    if not groups:
+        st.success("✅ ไม่พบรูปซ้ำในชุดนี้")
+        return
+    st.warning(f"พบ {len(groups)} กลุ่มที่อาจซ้ำ — เก็บไว้ 1 ใบ ที่เหลือกดลบ (ลงถังขยะ กู้คืนได้)")
+    for gi, group in enumerate(groups):
+        st.markdown(f"**กลุ่มที่ {gi + 1} · {len(group)} รูปคล้ายกัน**")
+        ncol = min(len(group), COLS_PER_ROW)
+        cols = st.columns(ncol)
+        for idx, item in enumerate(group):
+            with cols[idx % ncol]:
+                file_id = extract_file_id(item["ลิงก์รูป"])
+                try:
+                    st.image(get_image_bytes(file_id), width="stretch")
+                except Exception:
+                    st.caption("⚠️ โหลดรูปไม่ได้")
+                st.caption(f"{item.get('ชื่อไฟล์','')}  \n👤 {item.get('ผู้ส่ง','')} · {item.get('วันเวลา','')}")
+                if st.button("🗑️ ลบใบนี้", key=f"{key_prefix}_dupdel_{file_id}", width="stretch"):
+                    try:
+                        trash_photo(file_id, item["ลิงก์รูป"], deleted_by=deleted_by)
+                        log_action(deleted_by, role, "ลบรูป(ถังขยะ)",
+                                   detail=str(item.get("ชื่อไฟล์", "")),
+                                   activity_id=str(item.get("activity_id", "")))
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"ลบไม่สำเร็จ: {e}")
+        st.divider()
 
 
 def _add_share(activity_id, vname, key_prefix):

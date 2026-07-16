@@ -22,6 +22,11 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
+from image_utils import hamming_distance   # เทียบลายนิ้วมือรูป (phash) หาซ้ำ
+
+# ระยะ phash ที่ถือว่า "รูปเดียวกัน/เกือบเหมือน" (0-64 ยิ่งน้อยยิ่งเหมือน)
+PHASH_DUP_THRESHOLD = 5
+
 # สิทธิ์ที่ใช้ ต้องตรงกับตอนขอ refresh token (get_refresh_token.py)
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -398,6 +403,60 @@ def count_activity_photos(activity_id) -> int:
     if df.empty or ACTIVITY_ID_HEADER not in df.columns:
         return 0
     return int((df[ACTIVITY_ID_HEADER].astype(str).str.strip() == str(activity_id).strip()).sum())
+
+
+# ===========================================================================
+# ตรวจรูปซ้ำด้วย phash (เตือนตอนอัป + สแกนหาซ้ำ)
+# ===========================================================================
+def find_similar_photo(phash: str, scope_df: pd.DataFrame, threshold: int = PHASH_DUP_THRESHOLD):
+    """
+    หารูปใน scope_df ที่ phash ใกล้เคียง (<= threshold) มากที่สุด — คืน dict ของรูปนั้น (มี _dist) หรือ None
+    scope_df = ขอบเขตที่จะเทียบ (เช่น รูปในกิจกรรมเดียวกัน)
+    """
+    if not phash or scope_df is None or scope_df.empty or PHASH_HEADER not in scope_df.columns:
+        return None
+    best, best_dist = None, threshold + 1
+    for _, r in scope_df.iterrows():
+        d = hamming_distance(phash, str(r.get(PHASH_HEADER, "")))
+        if d <= threshold and d < best_dist:
+            best, best_dist = r.to_dict(), d
+    if best is not None:
+        best["_dist"] = best_dist
+    return best
+
+
+def group_duplicates(df: pd.DataFrame, threshold: int = PHASH_DUP_THRESHOLD) -> list:
+    """
+    จัดกลุ่มรูปที่ phash ใกล้กัน (<= threshold) เป็นกลุ่มๆ ด้วย union-find
+    คืน list ของกลุ่ม (แต่ละกลุ่ม = list ของ dict แถวรูป) เฉพาะกลุ่มที่มีตั้งแต่ 2 รูปขึ้นไป
+    """
+    if df is None or df.empty or PHASH_HEADER not in df.columns:
+        return []
+    rows = df.to_dict("records")
+    hashes = [str(r.get(PHASH_HEADER, "")).strip() for r in rows]
+    n = len(rows)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        if not hashes[i]:
+            continue
+        for j in range(i + 1, n):
+            if hashes[j] and hamming_distance(hashes[i], hashes[j]) <= threshold:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+
+    groups = {}
+    for i in range(n):
+        if hashes[i]:
+            groups.setdefault(find(i), []).append(rows[i])
+    return [g for g in groups.values() if len(g) >= 2]
 
 
 # ===========================================================================

@@ -28,7 +28,7 @@ from google_utils import (
 )
 from page_gallery import build_zip, COLS_PER_ROW
 # reuse จากหน้า admin: สร้างกิจกรรม (กันรหัสซ้ำ/สุ่มรหัส) + กล่องแชร์อัลบั้ม จะได้ไม่เขียนซ้ำ
-from page_activity_admin import _create_activity, render_share_panel
+from page_activity_admin import _create_activity, render_share_panel, render_duplicate_scan
 
 import page_upload
 import page_gallery
@@ -287,6 +287,9 @@ def _render_all_gallery():
     if st.session_state.get("su_zip_bytes"):
         st.download_button("⬇️ ดาวน์โหลด .zip", data=st.session_state["su_zip_bytes"],
                            file_name="all_activities.zip", mime="application/zip", key="su_zip_dl")
+
+    su = st.session_state.get("identity", {}).get("username", "superuser")
+    render_duplicate_scan(sub, "su", su, "superuser")
 
     st.divider()
 
