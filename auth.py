@@ -55,6 +55,8 @@ def logout():
     st.session_state["view"] = None
     st.session_state["role"] = None
     st.session_state["identity"] = {}
+    for k in ("prefill_actid", "prefill_actcode", "deeplink_error"):
+        st.session_state.pop(k, None)
     st.rerun()
 
 
@@ -117,9 +119,17 @@ def _login_user():
     id2name = dict(zip(ids, open_acts["ชื่อกิจกรรม"].astype(str)))
     id2hash = dict(zip(ids, open_acts["รหัสเข้า_hash"].astype(str)))
 
+    # ค่าที่เติมมาจาก QR deep-link (?actcode) — เลือกกิจกรรม + เติมรหัสให้ เหลือแค่กรอกชื่อ
+    prefill_id = st.session_state.get("prefill_actid", "")
+    prefill_code = st.session_state.get("prefill_actcode", "")
+    default_index = ids.index(prefill_id) if prefill_id in ids else 0
+    if prefill_id in ids:
+        st.info("📱 เปิดจาก QR แล้ว — เลือกกิจกรรมและใส่รหัสให้อัตโนมัติ เหลือแค่กรอกชื่อของคุณ")
+
     with st.form("login_user"):
-        sel_id = st.selectbox("เลือกกิจกรรม", ids, format_func=lambda i: id2name.get(i, i))
-        code = st.text_input("รหัสกิจกรรม")
+        sel_id = st.selectbox("เลือกกิจกรรม", ids, index=default_index,
+                              format_func=lambda i: id2name.get(i, i))
+        code = st.text_input("รหัสกิจกรรม", value=prefill_code)
         name = st.text_input("ชื่อของคุณ")
         ok = st.form_submit_button("เข้าร่วมกิจกรรม", width="stretch")
     if not ok:
@@ -140,6 +150,8 @@ def _login_user():
         "activity_name": id2name.get(sel_id, ""),
     }
     st.session_state["view"] = None
+    st.session_state.pop("prefill_actid", None)
+    st.session_state.pop("prefill_actcode", None)
     st.rerun()
 
 
@@ -257,9 +269,65 @@ def _login_viewer():
     st.rerun()
 
 
+def handle_deeplink():
+    """
+    อ่าน query param จาก QR deep-link แล้วพาเข้าให้อัตโนมัติ (เรียกตอนเปิดแอป ก่อน render):
+      ?viewcode=XXX → เข้าอัลบั้มเลย (role=viewer) ถ้ารหัสถูก
+      ?actcode=XXX  → เปิดหน้าส่งรูป + เลือกกิจกรรม + เติมรหัสให้ (เหลือแค่กรอกชื่อ)
+    """
+    if st.session_state.get("role"):
+        return  # login อยู่แล้ว ไม่ต้องจัดการ deep-link ซ้ำ
+
+    qp = st.query_params
+    viewcode = str(qp.get("viewcode", "") or "").strip()
+    actcode = str(qp.get("actcode", "") or "").strip()
+    if not viewcode and not actcode:
+        return
+
+    import google_utils as gu  # lazy import กัน circular import
+
+    if viewcode:
+        share = find_share_by_code(viewcode)
+        if share:
+            aid = str(share.get("activity_id"))
+            nm = ""
+            acts = gu.load_activities()
+            if not acts.empty and "activity_id" in acts.columns:
+                m = acts[acts["activity_id"].astype(str) == aid]
+                if not m.empty:
+                    nm = str(m.iloc[0]["ชื่อกิจกรรม"])
+            st.session_state["role"] = "viewer"
+            st.session_state["identity"] = {
+                "activity_id": aid, "activity_name": nm,
+                "viewer_name": str(share.get("ชื่อผู้ดู", "")),
+            }
+            st.session_state["view"] = None
+        else:
+            st.session_state["deeplink_error"] = "❌ รหัสดูใน QR ไม่ถูกต้อง หรือถูกถอนสิทธิ์แล้ว"
+    elif actcode:
+        act = find_open_activity(actcode)
+        if act:
+            st.session_state["view"] = "user"
+            st.session_state["prefill_actid"] = str(act.get("activity_id"))
+            st.session_state["prefill_actcode"] = actcode
+        else:
+            st.session_state["deeplink_error"] = "❌ รหัสกิจกรรมใน QR ไม่ถูกต้อง หรือกิจกรรมปิดแล้ว"
+
+    # ล้าง query param ทิ้ง กัน refresh แล้วเข้าซ้ำ + URL สะอาด
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+
+
 def render_landing():
     """หน้าแรก: เลือกประเภทการเข้าใช้ → แสดงฟอร์ม login ที่เลือก"""
     view = st.session_state.get("view")
+
+    # ข้อความ error จาก deep-link (QR รหัสผิด/หมดอายุ)
+    err = st.session_state.pop("deeplink_error", None)
+    if err:
+        st.error(err)
 
     # ----- ยังไม่เลือก = โชว์ 4 การ์ดให้เลือก -----
     if view is None:

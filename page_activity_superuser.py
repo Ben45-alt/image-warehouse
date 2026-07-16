@@ -171,7 +171,7 @@ def _render_manage_activities():
     last = st.session_state.get("admin_last_code")
     if last:
         st.success(f"✅ สร้างกิจกรรม “{last['name']}” แล้ว — แจกรหัสนี้ให้ผู้เข้าร่วม:")
-        render_code_with_qr(last["code"], "su_actcode")
+        render_code_with_qr(last["code"], "su_actcode", kind="act")
         if st.button("รับทราบ / ปิดข้อความนี้", key="su_dismiss_code"):
             del st.session_state["admin_last_code"]
             st.rerun()

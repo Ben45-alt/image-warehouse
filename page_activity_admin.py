@@ -27,6 +27,17 @@ from google_utils import (
 from page_gallery import build_zip, COLS_PER_ROW
 from qr_utils import qr_png
 
+# URL ของแอป (ใช้ทำ QR deep-link) — ตั้ง APP_URL ใน secrets ได้ ถ้าไม่ตั้งใช้ค่าเริ่มต้นนี้
+_DEFAULT_APP_URL = "https://image-warehouse-mis.streamlit.app"
+
+
+def _app_url() -> str:
+    try:
+        u = str(st.secrets.get("APP_URL", "")).strip().rstrip("/")
+        return u or _DEFAULT_APP_URL
+    except Exception:
+        return _DEFAULT_APP_URL
+
 # ตัวอักษรสำหรับสุ่มรหัส (ตัด 0/O/1/I ที่สับสนง่ายออก)
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -67,7 +78,7 @@ def _render_activities(username):
     last = st.session_state.get("admin_last_code")
     if last:
         st.success(f"✅ สร้างกิจกรรม “{last['name']}” แล้ว — แจกรหัสนี้ให้ลูกน้องเข้าร่วม:")
-        render_code_with_qr(last["code"], "adm_actcode")
+        render_code_with_qr(last["code"], "adm_actcode", kind="act")
         if st.button("รับทราบ / ปิดข้อความนี้", key="dismiss_code"):
             del st.session_state["admin_last_code"]
             st.rerun()
@@ -348,23 +359,28 @@ def _render_dashboard(username):
 # --------------------------------------------------------------------------
 # กล่องแชร์อัลบั้ม (ใช้ร่วมกันทั้งหน้า admin และ superuser)
 # --------------------------------------------------------------------------
-def render_code_with_qr(code, key_prefix):
+def render_code_with_qr(code, key_prefix, kind="view"):
     """
-    โชว์รหัส (ตัวอักษร) + ปุ่มเปิด/ปิด QR ของรหัสนั้น
+    โชว์รหัส (ตัวอักษร) + ปุ่มเปิด/ปิด QR แบบ deep-link ของรหัสนั้น
     - รหัสตัวอักษรโชว์เสมอ (ก๊อป/พิมพ์ได้ตามเดิม)
-    - กดปุ่มเพื่อกาง QR ให้สแกน (กดอีกครั้งเพื่อซ่อน)
+    - QR เก็บลิงก์ deep-link: kind="view" → ?viewcode (สแกนแล้วเข้าอัลบั้มเลย)
+                              kind="act"  → ?actcode  (สแกนแล้วเปิดหน้าส่งรูป + เติมรหัสให้)
     """
     st.code(code, language=None)
+    param = "viewcode" if kind == "view" else "actcode"
+    link = f"{_app_url()}/?{param}={code}"
+    hint = "เปิดอัลบั้ม" if kind == "view" else "เปิดหน้าส่งรูป"
+
     show_key = f"{key_prefix}_showqr"
     shown = st.session_state.get(show_key, False)
-    if st.button("🔽 ซ่อน QR" if shown else "📱 แสดง QR (ให้สแกนแทนพิมพ์)",
+    if st.button("🔽 ซ่อน QR" if shown else "📱 แสดง QR (สแกนแล้วเข้าได้เลย)",
                  key=f"{key_prefix}_qrbtn", width="stretch"):
         st.session_state[show_key] = not shown
         st.rerun()
     if st.session_state.get(show_key):
-        png = qr_png(code)
+        png = qr_png(link)
         if png:
-            st.image(png, width=200, caption=f"สแกนเพื่อดูรหัส: {code}")
+            st.image(png, width=200, caption=f"สแกนเพื่อ{hint} (หรือใช้รหัส {code})")
         else:
             st.caption("⚠️ สร้าง QR ไม่ได้")
 
@@ -405,7 +421,7 @@ def render_share_panel(activity_id, activity_name, key_prefix):
         last = st.session_state.get(f"{key_prefix}_last_share_{activity_id}")
         if last:
             st.success(f"✅ รหัสดูของ “{last['name']}” — ก๊อปส่งให้เขาเปิดที่หน้า 'ดูอัลบั้ม':")
-            render_code_with_qr(last["code"], f"{key_prefix}_sharecode_{activity_id}")
+            render_code_with_qr(last["code"], f"{key_prefix}_sharecode_{activity_id}", kind="view")
             if st.button("รับทราบ / ปิดข้อความ", key=f"{key_prefix}_dismiss_share_{activity_id}"):
                 del st.session_state[f"{key_prefix}_last_share_{activity_id}"]
                 st.rerun()
