@@ -260,7 +260,12 @@
 - `find_similar_photo` + `group_duplicates` ใน google_utils (import `hamming_distance` จาก image_utils) · ไม่ต้อง migrate schema (phash มีอยู่แล้ว)
 - ✅ ทดสอบ logic ในเครื่อง: find_similar เจอ/ไม่เจอถูก · group_duplicates จัดกลุ่มถูก · stub-import ทุกโมดูลผ่าน
 
-**🎉 แผนหลัก 5 ฟีเจอร์ครบแล้ว** · ถัดไปที่ผู้ใช้อยากได้: **QR Code รหัสกิจกรรม/รหัสดู** (ให้สแกนแทนพิมพ์)
+**🎉 แผนหลัก 5 ฟีเจอร์ครบแล้ว**
+
+**✅ ของเสริมหลังครบแผนหลัก:**
+- **QR Code + deep-link** (commit e062e92, 6a23b8a): `qr_utils.py` + `render_code_with_qr(code,key,kind)` โชว์รหัสตัวอักษร+ปุ่มเปิด/ปิด QR. QR เก็บ URL deep-link (view→`?viewcode=` เข้าอัลบั้มเลย / act→`?actcode=` เปิดส่งรูป+เติมรหัส). `auth.handle_deeplink()` อ่าน query param ตอนเปิดแอป auto-login/prefill. deps +qrcode
+- **Audit Log viewer** (commit 373b409): `load_log()` + แท็บ '📋 Log' ในหน้า superuser (ตาราง ใคร/ทำอะไร/เมื่อไหร่ ใหม่สุดก่อน + กรอง action/role + ค้นหา + map activity_id→ชื่อ)
+- **อัปหลายรูป + เอากล้องในเว็บออก**: หน้าส่งรูป (คลังทั่วไป+กิจกรรม) เปลี่ยน `st.camera_input` → `st.file_uploader(accept_multiple_files=True)` (บนมือถือช่องแนบไฟล์มีปุ่มถ่ายรูป fullscreen ให้อยู่แล้ว จอไม่เล็กเหมือน camera_input). อัปทีละหลายรูป มี progress bar + ตรวจรูปซ้ำแบบชุด (เจอซ้ำ→เลือก ส่งทั้งหมด/เฉพาะไม่ซ้ำ/ยกเลิก). กันชื่อไฟล์ซ้ำในชุด (กิจกรรม=seq เพิ่มต่อ / คลังทั่วไป=เติม _NN)
 
 ---
 

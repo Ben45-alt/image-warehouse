@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 page_upload.py — หน้า "ส่งรูป" (คลังภาพทั่วไป)
-ขั้นตอนเมื่อกดบันทึก: ตรวจข้อมูล → ย่อรูป → ตรวจรูปซ้ำ(phash) → อัป Drive → บันทึก Sheet
-ถ้ารูปคล้ายที่เคยส่งในคลังทั่วไป จะถามยืนยันก่อนบันทึก
+เลือก/ถ่ายได้ทีละหลายรูป (บนมือถือช่องแนบไฟล์มีปุ่มถ่ายรูปให้) → ย่อ → ตรวจซ้ำ → อัป → บันทึก
+ถ้ามีรูปคล้ายที่เคยส่ง/ซ้ำกันในชุด จะถามก่อนบันทึก
 """
 
 import io
@@ -11,46 +11,64 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from config import DEPARTMENTS, CATEGORIES
-from image_utils import compress_image, compute_phash
+from image_utils import compress_image, compute_phash, hamming_distance
 from google_utils import (
     upload_to_drive, append_row, make_general_filename, log_action,
-    load_general_data, find_similar_photo,
+    load_general_data, find_similar_photo, PHASH_DUP_THRESHOLD,
 )
 
 
-def _do_general_upload(department, category, title, tags, sender, comp_bytes, phash) -> str:
-    """อัปรูปคลังทั่วไปที่บีบแล้วขึ้น Drive + บันทึก Sheet + log — คืนชื่อไฟล์"""
+def _upload_batch(department, category, title, tags, sender, items) -> int:
+    """อัปหลายรูปเข้าคลังทั่วไป (แสดง progress) — คืนจำนวนที่อัปสำเร็จ"""
     now = datetime.now(ZoneInfo("Asia/Bangkok"))
     datetime_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    filename = make_general_filename(department, category, now)
-    file_id, link = upload_to_drive(io.BytesIO(comp_bytes), filename)
-    row = [datetime_str, department, category, title, tags, sender, link, filename, "", phash]
-    append_row(row)
-    log_action(sender, "general", "อัปโหลดรูป", detail=filename)
+    total = len(items)
+    prog = st.progress(0.0, text="กำลังอัปโหลด...")
+    ok = 0
+    for i, it in enumerate(items):
+        filename = make_general_filename(department, category, now)
+        if total > 1:  # หลายรูปวินาทีเดียวกัน → เติมลำดับกันชื่อซ้ำ
+            filename = filename[:-4] + f"_{i + 1:02d}.jpg"
+        file_id, link = upload_to_drive(io.BytesIO(it["bytes"]), filename)
+        row = [datetime_str, department, category, title, tags, sender, link, filename, "", it["phash"]]
+        append_row(row)
+        log_action(sender, "general", "อัปโหลดรูป", detail=filename)
+        ok += 1
+        prog.progress((i + 1) / total, text=f"อัปโหลด {i + 1}/{total}")
+    prog.empty()
     st.cache_data.clear()
-    return filename
+    return ok
 
 
-def _render_dup_confirm(pend):
-    """เจอรูปซ้ำ — ถามยืนยันก่อนบันทึกจริง"""
-    st.warning(
-        f"⚠️ รูปนี้คล้ายกับที่เคยส่งในคลังทั่วไปแล้ว "
-        f"(ไฟล์ {pend['dup_file']} · {pend['dup_dep']}/{pend['dup_cat']} · {pend['dup_dt']}) — จะบันทึกซ้ำไหม?"
-    )
-    st.image(pend["bytes"], width=240, caption="รูปที่กำลังจะบันทึก")
-    c1, c2 = st.columns(2)
-    if c1.button("✅ ยืนยันบันทึกเลย", width="stretch", key="up_dup_yes"):
-        try:
-            fn = _do_general_upload(
-                pend["department"], pend["category"], pend["title"], pend["tags"],
-                pend["sender"], pend["bytes"], pend["phash"],
-            )
-            st.session_state.pop("up_pending", None)
-            st.session_state["up_flash"] = f"✅ บันทึกสำเร็จ! (ไฟล์: {fn})"
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ เกิดข้อผิดพลาด: {e}")
-    if c2.button("❌ ยกเลิก (ไม่บันทึก)", width="stretch", key="up_dup_no"):
+def _render_batch_confirm(pend):
+    """เจอรูปซ้ำในชุด — เลือกบันทึกทั้งหมด / เฉพาะไม่ซ้ำ / ยกเลิก"""
+    items = pend["items"]
+    dups = [it for it in items if it.get("dup")]
+    st.warning(f"⚠️ พบ {len(dups)} รูปที่อาจซ้ำ จากทั้งหมด {len(items)} รูป — จะบันทึกแบบไหน?")
+
+    st.caption("รูปที่อาจซ้ำ:")
+    ncol = min(len(dups), 4) or 1
+    cols = st.columns(ncol)
+    for idx, it in enumerate(dups):
+        with cols[idx % ncol]:
+            st.image(it["bytes"], width="stretch")
+            st.caption(f"คล้าย: {it.get('dup_file','')}")
+
+    c1, c2, c3 = st.columns(3)
+    if c1.button("✅ บันทึกทั้งหมด (รวมที่ซ้ำ)", width="stretch", key="up_batch_all"):
+        n = _upload_batch(pend["department"], pend["category"], pend["title"],
+                          pend["tags"], pend["sender"], items)
+        st.session_state.pop("up_pending", None)
+        st.session_state["up_flash"] = f"✅ บันทึก {n} รูปสำเร็จ!"
+        st.rerun()
+    if c2.button(f"⏭️ เฉพาะไม่ซ้ำ (ข้าม {len(dups)})", width="stretch", key="up_batch_skip"):
+        keep = [it for it in items if not it.get("dup")]
+        n = _upload_batch(pend["department"], pend["category"], pend["title"],
+                          pend["tags"], pend["sender"], keep) if keep else 0
+        st.session_state.pop("up_pending", None)
+        st.session_state["up_flash"] = f"✅ บันทึก {n} รูป (ข้ามที่ซ้ำ {len(dups)} รูป)"
+        st.rerun()
+    if c3.button("❌ ยกเลิก", width="stretch", key="up_batch_cancel"):
         st.session_state.pop("up_pending", None)
         st.rerun()
 
@@ -62,22 +80,17 @@ def render():
     if flash:
         st.success(flash)
 
-    # มีรูปรอยืนยัน (เจอซ้ำ) → โชว์หน้ายืนยันแทนฟอร์ม
     pend = st.session_state.get("up_pending")
     if pend:
-        _render_dup_confirm(pend)
+        _render_batch_confirm(pend)
         return
-
-    # เลือกวิธีเพิ่มรูป (วางไว้นอก form เพื่อให้สลับ "แนบไฟล์/กล้อง" ได้ทันที)
-    source = st.radio("วิธีเพิ่มรูป", ["แนบไฟล์", "ถ่ายด้วยกล้อง"], horizontal=True)
 
     # ช่องอัปรูปต้องอยู่ "ใน" form เพื่อให้ clear_on_submit ล้างรูปหลังกดบันทึก (กันบันทึกซ้ำ)
     with st.form("upload_form", clear_on_submit=True):
-        if source == "แนบไฟล์":
-            image_file = st.file_uploader("เลือกไฟล์รูป (JPG, JPEG, PNG)", type=["jpg", "jpeg", "png"])
-        else:
-            image_file = st.camera_input("ถ่ายรูปจากกล้อง")
-
+        image_files = st.file_uploader(
+            "เลือกรูป (JPG, JPEG, PNG) — เลือก/ถ่ายได้หลายรูป",
+            type=["jpg", "jpeg", "png"], accept_multiple_files=True,
+        )
         col1, col2 = st.columns(2)
         with col1:
             department = st.selectbox("แผนก", DEPARTMENTS)
@@ -94,8 +107,8 @@ def render():
         return
 
     # ----- ตรวจสอบว่ากรอกครบก่อนบันทึก -----
-    if image_file is None:
-        st.error("⚠️ ยังไม่ได้เลือกหรือถ่ายรูป")
+    if not image_files:
+        st.error("⚠️ ยังไม่ได้เลือกรูป")
         return
     if not title.strip():
         st.error("⚠️ กรุณากรอกชื่อเรื่อง")
@@ -105,33 +118,42 @@ def render():
         return
 
     try:
-        with st.spinner("กำลังย่อรูป + ตรวจรูปซ้ำ..."):
-            now = datetime.now(ZoneInfo("Asia/Bangkok"))
-            # ย่อ/บีบรูป + ฝัง metadata (เก็บ EXIF เดิม + ฝังชื่อเรื่อง/ผู้ส่ง/วันเวลา)
-            compressed = compress_image(image_file, meta={
-                "description": title.strip(),
-                "artist": sender.strip(),
+        now = datetime.now(ZoneInfo("Asia/Bangkok"))
+        scope = load_general_data()
+
+        items = []
+        prog = st.progress(0.0, text="กำลังย่อรูป + ตรวจรูปซ้ำ...")
+        for i, f in enumerate(image_files):
+            compressed = compress_image(f, meta={
+                "description": title.strip(), "artist": sender.strip(),
                 "datetime": now.strftime("%Y:%m:%d %H:%M:%S"),
             })
-            comp_bytes = compressed.getvalue()
-            phash = compute_phash(comp_bytes)
-            # ตรวจรูปซ้ำในคลังทั่วไป
-            dup = find_similar_photo(phash, load_general_data())
+            b = compressed.getvalue()
+            ph = compute_phash(b)
+            dup = find_similar_photo(ph, scope)
+            dup_file = dup.get("ชื่อไฟล์", "") if dup else ""
+            is_dup = dup is not None
+            if not is_dup:
+                for j, prev in enumerate(items):
+                    if hamming_distance(ph, prev["phash"]) <= PHASH_DUP_THRESHOLD:
+                        is_dup = True
+                        dup_file = f"(รูปที่ {j + 1} ในชุดนี้)"
+                        break
+            items.append({"bytes": b, "phash": ph, "dup": is_dup, "dup_file": dup_file})
+            prog.progress((i + 1) / len(image_files),
+                          text=f"ย่อรูป + ตรวจซ้ำ {i + 1}/{len(image_files)}")
+        prog.empty()
 
-        if dup:
+        if any(it["dup"] for it in items):
             st.session_state["up_pending"] = {
                 "department": department, "category": category,
                 "title": title.strip(), "tags": tags.strip(), "sender": sender.strip(),
-                "bytes": comp_bytes, "phash": phash,
-                "dup_file": dup.get("ชื่อไฟล์", ""), "dup_dt": dup.get("วันเวลา", ""),
-                "dup_dep": dup.get("แผนก", ""), "dup_cat": dup.get("หมวด", ""),
+                "items": items,
             }
             st.rerun()
 
-        with st.spinner("กำลังอัปโหลด..."):
-            fn = _do_general_upload(department, category, title.strip(), tags.strip(),
-                                    sender.strip(), comp_bytes, phash)
-        st.session_state["up_flash"] = f"✅ บันทึกสำเร็จ! (ไฟล์: {fn})"
+        n = _upload_batch(department, category, title.strip(), tags.strip(), sender.strip(), items)
+        st.session_state["up_flash"] = f"✅ บันทึก {n} รูปสำเร็จ!"
         st.rerun()
     except Exception as e:
         st.error(f"❌ เกิดข้อผิดพลาด: {e}")
