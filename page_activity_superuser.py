@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 page_activity_superuser.py — หน้าของ "ผู้ดูแลระบบ / superuser" (role = superuser)
-superuser เห็น/จัดการได้ทุกอย่าง มี 6 แท็บ:
+superuser เห็น/จัดการได้ทุกอย่าง มี 7 แท็บ:
   1) 📊 Dashboard       — พื้นที่ Google Drive (15GB) + ภาพรวมกิจกรรม + กิจกรรมที่ต้องดูแล
   2) 🎯 จัดการกิจกรรม    — สร้างกิจกรรมเอง + เปิด/ปิดได้ทุกกิจกรรม (ของทุก admin)
   3) 🖼️ คลังภาพทุกกิจกรรม — เห็นรูปของ "ทุก" admin/กิจกรรม + ดาวน์โหลด/ลบ(→ถังขยะ)
   4) 🗑️ ถังขยะ          — รูปที่ลบทั้งระบบ (ทุกกิจกรรม+คลังทั่วไป) กู้คืน/ลบถาวร
   5) 👥 จัดการบัญชี admin  — สร้าง/ปิด/ลบบัญชี admin (เขียนลงแท็บ Users)
-  6) 📁 คลังภาพทั่วไป (เดิม) — เข้าระบบเก่า 3 หน้าได้ (ส่งรูป/คลังภาพ/Dashboard)
+  6) 📋 Log             — บันทึกการใช้งาน (ใคร/ทำอะไร/เมื่อไหร่) + กรอง/ค้นหา
+  7) 📁 คลังภาพทั่วไป (เดิม) — เข้าระบบเก่า 3 หน้าได้ (ส่งรูป/คลังภาพ/Dashboard)
 
 หมายเหตุ layout: หน้านี้ไม่มี sidebar — ปุ่มรีเฟรช/ออกจากระบบอยู่ที่ top bar (จัดการใน app.py)
 """
@@ -20,7 +21,7 @@ import pandas as pd
 
 import auth
 from google_utils import (
-    load_activities, load_users, load_data, load_active_data, load_trash_data,
+    load_activities, load_users, load_data, load_active_data, load_trash_data, load_log,
     add_user, set_user_status, delete_user, find_user,
     set_activity_status, delete_activity, is_activity_open,
     get_storage_quota, get_image_bytes, extract_file_id,
@@ -46,9 +47,9 @@ def _gb(num_bytes) -> float:
 
 
 def render():
-    tab_dash, tab_act, tab_gallery, tab_trash, tab_admin, tab_general = st.tabs(
+    tab_dash, tab_act, tab_gallery, tab_trash, tab_admin, tab_log, tab_general = st.tabs(
         ["📊 Dashboard", "🎯 จัดการกิจกรรม", "🖼️ คลังภาพทุกกิจกรรม",
-         "🗑️ ถังขยะ", "👥 จัดการบัญชี admin", "📁 คลังภาพทั่วไป"]
+         "🗑️ ถังขยะ", "👥 จัดการบัญชี admin", "📋 Log", "📁 คลังภาพทั่วไป"]
     )
     with tab_dash:
         _render_dashboard()
@@ -60,6 +61,8 @@ def render():
         _render_trash()
     with tab_admin:
         _render_admin_accounts()
+    with tab_log:
+        _render_log()
     with tab_general:
         _render_general()
 
@@ -488,7 +491,66 @@ def _create_admin(username, fullname, pw):
 
 
 # ==========================================================================
-# แท็บ 6: คลังภาพทั่วไป (ระบบเดิม) — reuse 3 หน้าเดิม
+# แท็บ 6: Log (บันทึกการใช้งาน) — ดู/ค้นว่าใครทำอะไรเมื่อไหร่
+# ==========================================================================
+def _render_log():
+    st.subheader("📋 บันทึกการใช้งาน (Audit Log)")
+    st.caption("บันทึกทุกการอัปโหลด/ลบ/กู้คืน — ไว้สืบย้อนว่าใคร ทำอะไร เมื่อไหร่")
+
+    if st.button("🔄 รีเฟรช log", key="log_refresh"):
+        load_log.clear()
+        st.rerun()
+
+    df = load_log()
+    if df.empty:
+        st.info("ยังไม่มีบันทึกการใช้งาน")
+        return
+
+    df = df.copy()
+    # แปลง activity_id → ชื่อกิจกรรม (อ่านง่ายขึ้น)
+    acts = load_activities()
+    id2name = {}
+    if not acts.empty and "activity_id" in acts.columns:
+        id2name = dict(zip(acts["activity_id"].astype(str), acts["ชื่อกิจกรรม"].astype(str)))
+    if "activity_id" in df.columns:
+        df["กิจกรรม"] = df["activity_id"].astype(str).map(
+            lambda a: id2name.get(a, a) if str(a).strip() else "-")
+
+    # เรียงใหม่สุดก่อน
+    df["_dt"] = pd.to_datetime(df.get("เวลา"), errors="coerce")
+    df = df.sort_values("_dt", ascending=False)
+
+    # ---- ตัวกรอง ----
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        actions = ["ทั้งหมด"] + sorted(a for a in df.get("การกระทำ", pd.Series(dtype=str)).astype(str).unique() if a)
+        fa = st.selectbox("การกระทำ", actions, key="log_f_action")
+    with c2:
+        roles = ["ทั้งหมด"] + sorted(r for r in df.get("role", pd.Series(dtype=str)).astype(str).unique() if r)
+        fr = st.selectbox("role", roles, key="log_f_role")
+    with c3:
+        kw = st.text_input("ค้นหา (ผู้ทำ / รายละเอียด)", key="log_f_kw")
+
+    f = df
+    if fa != "ทั้งหมด" and "การกระทำ" in f.columns:
+        f = f[f["การกระทำ"].astype(str) == fa]
+    if fr != "ทั้งหมด" and "role" in f.columns:
+        f = f[f["role"].astype(str) == fr]
+    if kw.strip():
+        k = kw.strip().lower()
+        m = pd.Series(False, index=f.index)
+        for col in ("ผู้ทำ", "รายละเอียด"):
+            if col in f.columns:
+                m = m | f[col].astype(str).str.lower().str.contains(k, na=False)
+        f = f[m]
+
+    st.markdown(f"**{len(f)} รายการ** (ใหม่สุดก่อน · โชว์สูงสุด 500)")
+    show_cols = [c for c in ["เวลา", "ผู้ทำ", "role", "การกระทำ", "รายละเอียด", "กิจกรรม"] if c in f.columns]
+    st.dataframe(f[show_cols].head(500), width="stretch", hide_index=True)
+
+
+# ==========================================================================
+# แท็บ 7: คลังภาพทั่วไป (ระบบเดิม) — reuse 3 หน้าเดิม
 # ==========================================================================
 def _render_general():
     st.subheader("📁 คลังภาพทั่วไป (ระบบเดิม)")

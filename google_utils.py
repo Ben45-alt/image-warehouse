@@ -231,6 +231,16 @@ def restore_photo(file_id: str, link: str) -> None:
 # ---------------------------------------------------------------------------
 # Audit log — บันทึกการกระทำสำคัญ (อัป/ลบ/กู้คืน) ไว้สืบย้อน
 # ---------------------------------------------------------------------------
+@st.cache_data(ttl=30)
+def load_log() -> pd.DataFrame:
+    """อ่านบันทึกการใช้งานทั้งหมดจากแท็บ Log เป็น DataFrame (cache 30 วิ) — คืนว่างถ้ายังไม่มีแท็บ"""
+    try:
+        ws = get_spreadsheet().worksheet(LOG_TAB)
+        return pd.DataFrame(ws.get_all_records())
+    except Exception:
+        return pd.DataFrame()
+
+
 def log_action(who: str, role: str, action: str, detail: str = "", activity_id: str = "") -> None:
     """
     บันทึก 1 บรรทัดลงแท็บ Log: เวลา · ผู้ทำ · role · การกระทำ · รายละเอียด · activity_id
@@ -246,6 +256,7 @@ def log_action(who: str, role: str, action: str, detail: str = "", activity_id: 
             [_now_str(), str(who), str(role), str(action), str(detail), str(activity_id)],
             value_input_option="USER_ENTERED",
         ))
+        load_log.clear()  # ให้หน้า Log เห็นรายการใหม่ทันที
     except Exception:
         pass
 
