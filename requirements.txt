@@ -8,4 +8,5 @@ google-auth-oauthlib      # ใช้ตอนรันสคริปต์ข�
 google-api-python-client  # ใช้คุยกับ Google Drive (อัปโหลดรูป)
 Pillow                    # ย่อ/บีบอัดรูป
 piexif                    # อ่าน/เขียน EXIF (ฝัง metadata บริบท + เก็บ EXIF กล้องเดิม)
+qrcode                    # สร้าง QR Code ของรหัสกิจกรรม/รหัสดู (ให้สแกนแทนพิมพ์)
 pandas                    # จัดการตารางข้อมูล + ทำ Dashboard

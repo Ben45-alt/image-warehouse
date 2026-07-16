@@ -28,7 +28,9 @@ from google_utils import (
 )
 from page_gallery import build_zip, COLS_PER_ROW
 # reuse จากหน้า admin: สร้างกิจกรรม (กันรหัสซ้ำ/สุ่มรหัส) + กล่องแชร์อัลบั้ม จะได้ไม่เขียนซ้ำ
-from page_activity_admin import _create_activity, render_share_panel, render_duplicate_scan
+from page_activity_admin import (
+    _create_activity, render_share_panel, render_duplicate_scan, render_code_with_qr,
+)
 
 import page_upload
 import page_gallery
@@ -169,7 +171,7 @@ def _render_manage_activities():
     last = st.session_state.get("admin_last_code")
     if last:
         st.success(f"✅ สร้างกิจกรรม “{last['name']}” แล้ว — แจกรหัสนี้ให้ผู้เข้าร่วม:")
-        st.code(last["code"], language=None)
+        render_code_with_qr(last["code"], "su_actcode")
         if st.button("รับทราบ / ปิดข้อความนี้", key="su_dismiss_code"):
             del st.session_state["admin_last_code"]
             st.rerun()

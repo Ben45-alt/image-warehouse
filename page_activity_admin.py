@@ -25,6 +25,7 @@ from google_utils import (
     VIS_PUBLIC, VIS_PRIVATE, group_duplicates,
 )
 from page_gallery import build_zip, COLS_PER_ROW
+from qr_utils import qr_png
 
 # ตัวอักษรสำหรับสุ่มรหัส (ตัด 0/O/1/I ที่สับสนง่ายออก)
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -66,7 +67,7 @@ def _render_activities(username):
     last = st.session_state.get("admin_last_code")
     if last:
         st.success(f"✅ สร้างกิจกรรม “{last['name']}” แล้ว — แจกรหัสนี้ให้ลูกน้องเข้าร่วม:")
-        st.code(last["code"], language=None)
+        render_code_with_qr(last["code"], "adm_actcode")
         if st.button("รับทราบ / ปิดข้อความนี้", key="dismiss_code"):
             del st.session_state["admin_last_code"]
             st.rerun()
@@ -347,6 +348,27 @@ def _render_dashboard(username):
 # --------------------------------------------------------------------------
 # กล่องแชร์อัลบั้ม (ใช้ร่วมกันทั้งหน้า admin และ superuser)
 # --------------------------------------------------------------------------
+def render_code_with_qr(code, key_prefix):
+    """
+    โชว์รหัส (ตัวอักษร) + ปุ่มเปิด/ปิด QR ของรหัสนั้น
+    - รหัสตัวอักษรโชว์เสมอ (ก๊อป/พิมพ์ได้ตามเดิม)
+    - กดปุ่มเพื่อกาง QR ให้สแกน (กดอีกครั้งเพื่อซ่อน)
+    """
+    st.code(code, language=None)
+    show_key = f"{key_prefix}_showqr"
+    shown = st.session_state.get(show_key, False)
+    if st.button("🔽 ซ่อน QR" if shown else "📱 แสดง QR (ให้สแกนแทนพิมพ์)",
+                 key=f"{key_prefix}_qrbtn", width="stretch"):
+        st.session_state[show_key] = not shown
+        st.rerun()
+    if st.session_state.get(show_key):
+        png = qr_png(code)
+        if png:
+            st.image(png, width=200, caption=f"สแกนเพื่อดูรหัส: {code}")
+        else:
+            st.caption("⚠️ สร้าง QR ไม่ได้")
+
+
 def render_share_panel(activity_id, activity_name, key_prefix):
     """
     กล่องตั้งค่าการแชร์อัลบั้มของ 1 กิจกรรม:
@@ -383,7 +405,7 @@ def render_share_panel(activity_id, activity_name, key_prefix):
         last = st.session_state.get(f"{key_prefix}_last_share_{activity_id}")
         if last:
             st.success(f"✅ รหัสดูของ “{last['name']}” — ก๊อปส่งให้เขาเปิดที่หน้า 'ดูอัลบั้ม':")
-            st.code(last["code"], language=None)
+            render_code_with_qr(last["code"], f"{key_prefix}_sharecode_{activity_id}")
             if st.button("รับทราบ / ปิดข้อความ", key=f"{key_prefix}_dismiss_share_{activity_id}"):
                 del st.session_state[f"{key_prefix}_last_share_{activity_id}"]
                 st.rerun()
