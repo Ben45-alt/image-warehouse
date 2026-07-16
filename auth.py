@@ -198,25 +198,6 @@ def find_share_by_code(code_plain: str):
     return None
 
 
-def _render_activity_menu():
-    """เมนูย่อยของ 'กิจกรรม' — เลือกว่าจะ ส่งรูป หรือ ดูอัลบั้ม"""
-    st.subheader("🎯 กิจกรรม")
-    st.caption("เลือกสิ่งที่ต้องการทำ")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("### 📤 ส่งรูป")
-        st.write("มีรหัสกิจกรรม — ถ่าย/ส่งรูปเข้ากิจกรรม")
-        if st.button("ส่งรูปเข้ากิจกรรม", width="stretch", key="b_act_send"):
-            st.session_state["view"] = "user"
-            st.rerun()
-    with c2:
-        st.markdown("### 🖼️ ดูอัลบั้ม")
-        st.write("ดูรูปในอัลบั้ม (สาธารณะ หรือถูกแชร์ให้ดู)")
-        if st.button("ดูอัลบั้มกิจกรรม", width="stretch", key="b_act_view"):
-            st.session_state["view"] = "viewer"
-            st.rerun()
-
-
 def _login_viewer():
     """
     ดูอัลบั้มกิจกรรม 2 ทาง:
@@ -280,24 +261,30 @@ def render_landing():
     """หน้าแรก: เลือกประเภทการเข้าใช้ → แสดงฟอร์ม login ที่เลือก"""
     view = st.session_state.get("view")
 
-    # ----- ยังไม่เลือก = โชว์ 3 การ์ดให้เลือก -----
+    # ----- ยังไม่เลือก = โชว์ 4 การ์ดให้เลือก -----
     if view is None:
         st.title("📷 คลังภาพกลางของบริษัท")
         st.caption("เลือกประเภทการเข้าใช้งาน")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown("### 📁 คลังภาพทั่วไป")
+            st.markdown("### 📁 คลังทั่วไป")
             st.write("พนักงานทั่วไป — ส่ง/ค้นหารูปตามแผนก")
-            if st.button("เข้าคลังภาพทั่วไป", width="stretch", key="b_general"):
+            if st.button("เข้าคลังทั่วไป", width="stretch", key="b_general"):
                 st.session_state["view"] = "general"
                 st.rerun()
         with c2:
-            st.markdown("### 🎯 กิจกรรม")
-            st.write("ส่งรูปเข้ากิจกรรม หรือดูอัลบั้ม")
-            if st.button("เข้าหน้ากิจกรรม", width="stretch", key="b_activity"):
-                st.session_state["view"] = "activity"
+            st.markdown("### 📤 ส่งรูปกิจกรรม")
+            st.write("มีรหัสกิจกรรม — ถ่าย/ส่งรูป")
+            if st.button("ส่งรูปกิจกรรม", width="stretch", key="b_user"):
+                st.session_state["view"] = "user"
                 st.rerun()
         with c3:
+            st.markdown("### 🖼️ ดูอัลบั้ม")
+            st.write("ดูรูป (สาธารณะ/ถูกแชร์)")
+            if st.button("ดูอัลบั้มกิจกรรม", width="stretch", key="b_viewer"):
+                st.session_state["view"] = "viewer"
+                st.rerun()
+        with c4:
             st.markdown("### 🔐 เข้าสู่ระบบ")
             st.write("admin / ผู้ดูแลระบบ")
             if st.button("เข้าสู่ระบบ", width="stretch", key="b_staff"):
@@ -313,8 +300,6 @@ def render_landing():
     if view == "general":
         st.subheader("📁 เข้าคลังภาพทั่วไป")
         _login_general()
-    elif view == "activity":
-        _render_activity_menu()
     elif view == "user":
         st.subheader("📤 ส่งรูปเข้ากิจกรรม")
         _login_user()
