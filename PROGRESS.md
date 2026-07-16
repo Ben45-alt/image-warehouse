@@ -213,6 +213,35 @@
 
 ---
 
+## 🚀 อัปเกรดใหญ่ Round 1+2 (deploy แล้ว 2026-07-16, commit 6e707ab)
+
+> ประชุมกับผู้ใช้ตกลง 5 ฟีเจอร์ แบ่งทำ 3 รอบ — Round 1+2 push ขึ้น production แล้ว, Round 3 (แชร์อัลบั้มเฉพาะคน) ยังไม่ทำ
+
+**✅ Round 1 — metadata + ชื่อไฟล์ + phash** (`image_utils.py`, `google_utils.py`, `page_upload.py`, `page_activity_user.py`)
+- รูป .jpg ฝัง metadata: เก็บ EXIF กล้องเดิม (DateTimeOriginal/GPS) **+** ฝังบริบท (ชื่อเรื่อง/กิจกรรม=ImageDescription, ผู้ส่ง=Artist, วันเวลา) — ใช้ `piexif` + ช่อง **XP (UTF-16)** ให้ Windows Explorer อ่านไทยถูก (ช่อง EXIF มาตรฐานเป็น ASCII ไทยจะ mojibake ในบางโปรแกรม แต่ XP ครอบให้แล้ว)
+- ชื่อไฟล์: กิจกรรม = `ชื่อกิจกรรม_ลำดับ3หลัก_เวลา.jpg` / คลังทั่วไป = `แผนก_หมวด_เวลา.jpg` (มี `sanitize_name` ตัดอักขระอันตราย เฉพาะรูปใหม่)
+- เก็บ `phash` (dHash 64 บิต เขียนเอง ไม่พึ่ง lib นอก) ตอนอัป ไว้ตรวจรูปซ้ำภายหลัง (UI เตือน/สแกนซ้ำ = งานรอบหลัง)
+- ✅ ทดสอบในเครื่อง: metadata ฝังไทยอ่านกลับครบ + เก็บ DateTimeOriginal เดิมไม่ทับ / phash ซ้ำ=0 ต่าง=23 / ชื่อไฟล์ถูก
+
+**✅ Round 2 — ถังขยะ + audit log + auto-close + ล็อก user** (`google_utils.py`, `auth.py`, ทุกหน้า gallery)
+- **ถังขยะ 30 วัน:** ลบรูป = `trashed=True` ใน Drive (Google ล้างเอง 30 วัน) + ทำเครื่องหมายแถว (สถานะ/วันที่ลบ/ลบโดย) ไม่ลบแถวจริง → รูปหายจากคลังทันทีแต่กู้คืนได้. `trash_photo`/`restore_photo` + `load_active_data`/`load_trash_data`
+  - แท็บถังขยะใหม่: **admin** เห็น/กู้เฉพาะกิจกรรมตัวเอง · **superuser** เห็นทั้งระบบ (ทุกกิจกรรม+คลังทั่วไป) กู้คืน+ลบถาวร · **user ไม่มีถังขยะ**
+  - หลัง 30 วัน Drive ลบไฟล์เอง แถวในชีตค้าง → **ตั้งใจลบเอง** (ไม่ทำ cron)
+- **Audit log:** แท็บ `Log` (เวลา/ผู้ทำ/role/การกระทำ/รายละเอียด/activity_id) — จดตอน อัป/ลบ/กู้คืน/ลบกิจกรรม/ลบถาวร. `log_action` ครอบ try/except ไม่ให้ log พังงานหลัก
+- **auto-close 7 วัน:** กิจกรรมครบ 7 วันจากวันสร้าง → ผู้เข้าร่วม login ไม่ได้ (virtual ไม่แก้ชีต, `is_activity_open`/`open_activities`) + หน้า admin/superuser โชว์ "⏰ ปิดอัตโนมัติแล้ว"
+- **ล็อก role=user ลบไม่ได้:** ยืนยันด้วย static test ว่า `page_activity_user` ไม่มีฟังก์ชันลบเลย
+- ✅ ทดสอบในเครื่อง: auto-close ถูกทุกขอบเขต / compile+cross-import ครบ / user ปลอดฟังก์ชันลบ
+
+**⚙️ schema (รันจริงกับชีต production แล้ว):** เพิ่ม Sheet1 คอลัมน์ J=`phash` K=`สถานะ` L=`วันที่ลบ` M=`ลบโดย` + สร้างแท็บ `Log` — ผ่านสคริปต์ `_migrate_schema.py` (ทำงานเทียบเท่า `ensure_schema` แต่รันนอก streamlit เพราะ local streamlit พังจาก starlette/Py3.14) แล้วลบสคริปต์ทิ้ง. ยืนยัน `get_all_records` อ่าน 21 แถวเดิมได้ปกติ คอลัมน์ใหม่ว่าง (backward-compatible)
+
+**⏳ รอทดสอบบนเว็บจริง (หลัง redeploy เสร็จ):**
+1. ถ้าเจอ ImportError → **Reboot app** (module เก่าค้าง sys.modules — บทเรียนเดิม) + piexif เป็น dep ใหม่ อาจต้อง reboot ให้ติดตั้ง
+2. ทดสอบ: อัปรูป (เช็คชื่อไฟล์ใหม่ + เปิด properties รูปดู metadata ไทยบน Windows) · ลบรูป → ไปถังขยะ · กู้คืน · ดูแท็บ Log ว่าจดครบ
+
+**Round 3 (ยังไม่ทำ):** แชร์อัลบั้มเฉพาะคน — ถ่าย(ใครก็ส่งได้) ≠ ดู(เจ้าของแชร์ให้เฉพาะคน/ทุกคน, รหัสดูส่วนตัวรายคน ถอนได้) เป็นงานใหญ่ ต้องเอา UX มาโชว์ก่อนเขียน
+
+---
+
 ## 👀 ปัญหาที่เจอ — รอสังเกตเพิ่ม (ยังไม่แก้ 2026-06-30)
 
 **ถ่ายรูปบนมือถือ (Safari) บางครั้งหมุนนาน บางครั้งไวมาก**
