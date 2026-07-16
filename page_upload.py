@@ -9,8 +9,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from config import DEPARTMENTS, CATEGORIES
-from image_utils import compress_image
-from google_utils import upload_to_drive, append_row
+from image_utils import compress_image, compute_phash
+from google_utils import upload_to_drive, append_row, make_general_filename, log_action
 
 
 def render():
@@ -58,18 +58,25 @@ def render():
     # ----- เริ่มทำงานจริง -----
     try:
         with st.spinner("กำลังย่อรูปและอัปโหลด..."):
-            # 1) ย่อ/บีบรูปด้วย Pillow
-            compressed = compress_image(image_file)
-
-            # 2) สร้างเวลาปัจจุบัน (เวลาไทย) + ชื่อไฟล์
+            # 1) สร้างเวลาปัจจุบัน (เวลาไทย) + ชื่อไฟล์ตามแผนก/หมวด
             now = datetime.now(ZoneInfo("Asia/Bangkok"))
             datetime_str = now.strftime("%Y-%m-%d %H:%M:%S")
-            filename = now.strftime("%Y%m%d_%H%M%S") + ".jpg"
+            filename = make_general_filename(department, category, now)
 
-            # 3) อัปขึ้น Drive + ตั้งสิทธิ์ให้ดูได้
+            # 2) ย่อ/บีบรูป + ฝัง metadata บริบท (เก็บ EXIF เดิม + ฝังชื่อเรื่อง/ผู้ส่ง/วันเวลา)
+            compressed = compress_image(image_file, meta={
+                "description": title.strip(),
+                "artist": sender.strip(),
+                "datetime": now.strftime("%Y:%m:%d %H:%M:%S"),
+            })
+
+            # 3) ลายนิ้วมือรูป (ไว้ตรวจซ้ำภายหลัง) — คำนวณจาก bytes ที่มีอยู่แล้ว ไม่ต้องโหลดใหม่
+            phash = compute_phash(compressed.getvalue())
+
+            # 4) อัปขึ้น Drive + ตั้งสิทธิ์ให้ดูได้
             file_id, link = upload_to_drive(compressed, filename)
 
-            # 4) บันทึกลง Sheet (ลำดับต้องตรงกับหัวตาราง)
+            # 5) บันทึกลง Sheet (ลำดับต้องตรงกับหัวตาราง) — คลังทั่วไป activity_id เว้นว่าง
             row = [
                 datetime_str,      # วันเวลา
                 department,        # แผนก
@@ -79,8 +86,11 @@ def render():
                 sender.strip(),    # ผู้ส่ง
                 link,              # ลิงก์รูป
                 filename,          # ชื่อไฟล์
+                "",                # activity_id (คลังทั่วไป = ว่าง)
+                phash,             # ลายนิ้วมือรูป
             ]
             append_row(row)
+            log_action(sender.strip(), "general", "อัปโหลดรูป", detail=filename)
 
             # ล้าง cache เพื่อให้หน้าคลังภาพเห็นรูปใหม่ทันที
             st.cache_data.clear()

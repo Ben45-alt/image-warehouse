@@ -12,6 +12,8 @@ google_utils.py — รวมฟังก์ชันสำหรับเชื
 import io
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import gspread
@@ -120,13 +122,13 @@ def append_row(row_values: list):
     _retry(lambda: ws.append_row(row_values, value_input_option="USER_ENTERED"))
 
 
-def append_activity_row(datetime_str, sender, link, filename, activity_id):
+def append_activity_row(datetime_str, sender, link, filename, activity_id, phash=""):
     """
     บันทึกรูปที่ส่งผ่าน "กิจกรรม" ลง Sheet เดิม (reuse append_row)
-    ลำดับคอลัมน์: วันเวลา, แผนก, หมวด, ชื่อเรื่อง, แท็ก, ผู้ส่ง, ลิงก์รูป, ชื่อไฟล์, activity_id
+    ลำดับคอลัมน์: วันเวลา, แผนก, หมวด, ชื่อเรื่อง, แท็ก, ผู้ส่ง, ลิงก์รูป, ชื่อไฟล์, activity_id, phash
     → แผนก/หมวด/ชื่อเรื่อง/แท็ก ปล่อยว่าง (เป็นรูปของกิจกรรม ไม่ใช่คลังทั่วไป)
     """
-    append_row([datetime_str, "", "", "", "", sender, link, filename, activity_id])
+    append_row([datetime_str, "", "", "", "", sender, link, filename, activity_id, phash])
 
 
 def delete_photo(file_id: str, link: str):
@@ -153,6 +155,126 @@ def delete_photo(file_id: str, link: str):
         _retry(lambda: ws.delete_rows(cell.row))
 
 
+# ---------------------------------------------------------------------------
+# ถังขยะ (soft delete) — ลบ = ย้ายเข้าถังขยะ Drive (auto-purge 30 วัน) + ทำเครื่องหมายในชีต
+# ---------------------------------------------------------------------------
+def _now_str() -> str:
+    """เวลาปัจจุบัน (ไทย) เป็นสตริง — ใช้จดวันที่ลบ/บันทึก log"""
+    return datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _update_row_fields(link: str, fields: dict) -> bool:
+    """
+    หาแถวในชีตจากคอลัมน์ 'ลิงก์รูป' (คอลัมน์ 7) แล้วอัปเดตค่าตามชื่อหัวตาราง
+    fields = {ชื่อหัวคอลัมน์: ค่าใหม่} — ข้ามคอลัมน์ที่ยังไม่มีในหัวตาราง คืน True ถ้าเจอแถว
+    """
+    ws = get_worksheet()
+    header = ws.row_values(1)
+    try:
+        cell = ws.find(link, in_column=7)
+    except Exception:
+        cell = None
+    if not cell:
+        return False
+    row = cell.row
+    for name, val in fields.items():
+        if name in header:
+            col = header.index(name) + 1
+            _retry(lambda c=col, v=val: ws.update_cell(row, c, v))
+    return True
+
+
+def trash_photo(file_id: str, link: str, deleted_by: str = "") -> None:
+    """
+    ย้ายรูป 1 รายการเข้า "ถังขยะ" (กู้คืนได้ ~30 วัน):
+      1) Drive: ตั้ง trashed=True → Google ล้างไฟล์ทิ้งเองอัตโนมัติเมื่อครบ 30 วัน
+      2) Sheet: ทำเครื่องหมายแถว (สถานะ=ถังขยะ, วันที่ลบ, ลบโดย) — ไม่ลบแถวจริง
+    รูปจะหายจากคลังทันที แต่ยังกู้คืนได้จากหน้าถังขยะ
+    """
+    if file_id:
+        try:
+            service = get_drive_service()
+            _retry(lambda: service.files().update(
+                fileId=file_id, body={"trashed": True}).execute(num_retries=5))
+        except Exception:
+            pass  # ไฟล์อาจไม่มีแล้ว — ไปทำเครื่องหมายในชีตต่อ
+    _update_row_fields(link, {
+        STATUS_HEADER: TRASH_STATUS,
+        DELETED_AT_HEADER: _now_str(),
+        DELETED_BY_HEADER: deleted_by,
+    })
+    load_data.clear()
+
+
+def restore_photo(file_id: str, link: str) -> None:
+    """
+    กู้รูปจากถังขยะกลับมา:
+      1) Drive: ตั้ง trashed=False (ต้องกู้ก่อนครบ 30 วัน ไม่งั้น Google ลบไฟล์จริงไปแล้ว)
+      2) Sheet: ล้างสถานะ/วันที่ลบ/ลบโดย → รูปกลับมาโผล่ในคลังตามเดิม
+    """
+    if file_id:
+        try:
+            service = get_drive_service()
+            _retry(lambda: service.files().update(
+                fileId=file_id, body={"trashed": False}).execute(num_retries=5))
+        except Exception:
+            pass
+    _update_row_fields(link, {STATUS_HEADER: "", DELETED_AT_HEADER: "", DELETED_BY_HEADER: ""})
+    load_data.clear()
+
+
+# ---------------------------------------------------------------------------
+# Audit log — บันทึกการกระทำสำคัญ (อัป/ลบ/กู้คืน) ไว้สืบย้อน
+# ---------------------------------------------------------------------------
+def log_action(who: str, role: str, action: str, detail: str = "", activity_id: str = "") -> None:
+    """
+    บันทึก 1 บรรทัดลงแท็บ Log: เวลา · ผู้ทำ · role · การกระทำ · รายละเอียด · activity_id
+    ครอบ try/except ทั้งหมด — การจด log ต้องไม่ทำให้งานหลัก (อัป/ลบ) พังเด็ดขาด
+    """
+    try:
+        ss = get_spreadsheet()
+        try:
+            ws = ss.worksheet(LOG_TAB)
+        except gspread.WorksheetNotFound:
+            ws = _ensure_tab(ss, LOG_TAB, LOG_HEADER)
+        _retry(lambda: ws.append_row(
+            [_now_str(), str(who), str(role), str(action), str(detail), str(activity_id)],
+            value_input_option="USER_ENTERED",
+        ))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# auto-close กิจกรรม — ปิดอัตโนมัติเมื่อครบ 7 วันนับจากวันสร้าง (ตรวจตอนใช้งาน ไม่แก้ชีต)
+# ---------------------------------------------------------------------------
+def is_activity_expired(created, now=None, days: int = AUTO_CLOSE_DAYS) -> bool:
+    """หมดอายุ auto-close หรือยัง (ครบ `days` วันนับจากวันสร้าง). parse วันไม่ได้ = ยังไม่หมด (กันปิดมั่ว)"""
+    dt = pd.to_datetime(str(created), errors="coerce")
+    if pd.isna(dt):
+        return False
+    now = now or datetime.now(ZoneInfo("Asia/Bangkok"))
+    return (now.date() - dt.date()).days >= days
+
+
+def is_activity_open(row, now=None) -> bool:
+    """เปิดอยู่จริงไหม = สถานะ 'เปิด' และยังไม่หมดอายุ auto-close (row = dict/Series ของกิจกรรม)"""
+    if str(row.get("สถานะ")) != "เปิด":
+        return False
+    return not is_activity_expired(row.get("วันที่สร้าง"), now)
+
+
+def open_activities(df: pd.DataFrame = None, now=None) -> pd.DataFrame:
+    """DataFrame ของกิจกรรมที่ 'เปิดอยู่จริง' (สถานะเปิด + ยังไม่หมดอายุ) — ใช้ในหน้า login/dropdown"""
+    if df is None:
+        df = load_activities()
+    if df.empty or "สถานะ" not in df.columns:
+        return df.iloc[0:0] if not df.empty else df
+    now = now or datetime.now(ZoneInfo("Asia/Bangkok"))
+    mask = df.apply(lambda r: is_activity_open(r, now), axis=1)
+    return df[mask].copy()
+
+
 @st.cache_data(ttl=60)
 def load_data() -> pd.DataFrame:
     """
@@ -165,9 +287,32 @@ def load_data() -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _not_trashed_mask(df: pd.DataFrame) -> pd.Series:
+    """คืน mask ของแถวที่ 'ไม่ได้อยู่ในถังขยะ' — ถ้าชีตยังไม่มีคอลัมน์สถานะ ถือว่าปกติทั้งหมด"""
+    if STATUS_HEADER not in df.columns:
+        return pd.Series(True, index=df.index)
+    return df[STATUS_HEADER].astype(str).str.strip() != TRASH_STATUS
+
+
+def load_active_data() -> pd.DataFrame:
+    """ข้อมูลรูปทั้งหมด 'ที่ยังไม่ถูกลบ' (ไม่รวมถังขยะ) — ใช้ในทุกหน้าคลังภาพ"""
+    df = load_data()
+    if df.empty:
+        return df
+    return df[_not_trashed_mask(df)].copy()
+
+
+def load_trash_data() -> pd.DataFrame:
+    """ข้อมูลรูป 'ในถังขยะ' เท่านั้น — ใช้ในหน้าถังขยะ (admin/superuser)"""
+    df = load_data()
+    if df.empty or STATUS_HEADER not in df.columns:
+        return df.iloc[0:0] if not df.empty else df
+    return df[df[STATUS_HEADER].astype(str).str.strip() == TRASH_STATUS].copy()
+
+
 def load_general_data() -> pd.DataFrame:
     """
-    ข้อมูลเฉพาะ "คลังภาพทั่วไป" (ระบบเดิม) = แถวที่ activity_id ว่าง/ไม่มีค่า
+    ข้อมูลเฉพาะ "คลังภาพทั่วไป" (ระบบเดิม) = แถวที่ activity_id ว่าง/ไม่มีค่า และไม่อยู่ในถังขยะ
     ใช้ในหน้าเดิม (คลังภาพ + Dashboard) เพื่อกัน "รูปกิจกรรม" (ที่แผนก/หมวดว่าง) หลุดมาโผล่ปนกัน
     ถ้าชีตยังไม่มีคอลัมน์ activity_id (ข้อมูลเก่าล้วน) ก็คืนทั้งหมดตามเดิม
     """
@@ -175,7 +320,7 @@ def load_general_data() -> pd.DataFrame:
     if df.empty or ACTIVITY_ID_HEADER not in df.columns:
         return df
     is_general = df[ACTIVITY_ID_HEADER].astype(str).str.strip() == ""
-    return df[is_general].copy()
+    return df[is_general & _not_trashed_mask(df)].copy()
 
 
 def download_file_bytes(file_id: str) -> bytes:
@@ -214,10 +359,63 @@ def extract_file_id(link: str) -> str:
 
 
 # ===========================================================================
+# ตั้งชื่อไฟล์ (ตามกิจกรรม / ตามแผนก-หมวด) — ทำความสะอาดชื่อให้ปลอดภัย
+# ===========================================================================
+# อักขระต้องห้ามในชื่อไฟล์ (Windows/Drive) + อักขระควบคุม → ตัดทิ้ง
+_UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def sanitize_name(s, max_len: int = 40) -> str:
+    """
+    แปลงข้อความ (ชื่อกิจกรรม/แผนก/หมวด) ให้เป็นส่วนหนึ่งของชื่อไฟล์ที่ปลอดภัย
+    - ตัดอักขระต้องห้าม + ยุบช่องว่างเป็นขีดล่าง + ตัดจุด/ช่องว่างหน้า-หลัง
+    - เก็บภาษาไทย/อังกฤษ/ตัวเลขไว้ได้ปกติ ; ถ้าว่างคืน 'ไม่ระบุ' ; ตัดความยาวกันชื่อยาวเกิน
+    """
+    s = _UNSAFE_FILENAME.sub("", str(s))
+    s = re.sub(r"\s+", "_", s.strip())   # ช่องว่าง → ขีดล่าง (กันชื่อไฟล์มีเว้นวรรค)
+    s = s.strip("._ ")
+    if not s:
+        s = "ไม่ระบุ"
+    return s[:max_len]
+
+
+def make_activity_filename(activity_name, seq: int, now) -> str:
+    """ชื่อไฟล์รูปกิจกรรม: <ชื่อกิจกรรม>_<ลำดับ3หลัก>_<HHMMSS>.jpg"""
+    return f"{sanitize_name(activity_name)}_{int(seq):03d}_{now.strftime('%H%M%S')}.jpg"
+
+
+def make_general_filename(department, category, now) -> str:
+    """ชื่อไฟล์รูปคลังทั่วไป: <แผนก>_<หมวด>_<HHMMSS>.jpg"""
+    return f"{sanitize_name(department)}_{sanitize_name(category)}_{now.strftime('%H%M%S')}.jpg"
+
+
+def count_activity_photos(activity_id) -> int:
+    """นับจำนวนรูปที่อยู่ในกิจกรรมนี้ (ไว้คิด 'ลำดับ' ของรูปถัดไป) — อ่านจากคอลัมน์ activity_id"""
+    df = load_data()
+    if df.empty or ACTIVITY_ID_HEADER not in df.columns:
+        return 0
+    return int((df[ACTIVITY_ID_HEADER].astype(str).str.strip() == str(activity_id).strip()).sum())
+
+
+# ===========================================================================
 # ระบบกิจกรรม (Activity) — โครงข้อมูลใหม่ ทำงานคู่กับของเดิม (ไม่แก้ของเดิม)
 # ===========================================================================
 
 ACTIVITY_ID_HEADER = "activity_id"                 # คอลัมน์ที่ 9 เพิ่มใน sheet1
+PHASH_HEADER = "phash"                             # คอลัมน์ที่ 10 — ลายนิ้วมือรูป (ตรวจซ้ำ)
+STATUS_HEADER = "สถานะ"                             # คอลัมน์ที่ 11 — ""(ปกติ) / "ถังขยะ"
+DELETED_AT_HEADER = "วันที่ลบ"                       # คอลัมน์ที่ 12 — เวลาที่ย้ายเข้าถังขยะ
+DELETED_BY_HEADER = "ลบโดย"                          # คอลัมน์ที่ 13 — ใครเป็นคนลบ
+TRASH_STATUS = "ถังขยะ"                             # ค่าในคอลัมน์สถานะเมื่อรูปอยู่ในถังขยะ
+# คอลัมน์ที่เพิ่มต่อท้าย sheet1 (นอกเหนือจาก 8 คอลัมน์เดิม) — เรียงตามลำดับที่ ensure_schema เติม
+_EXTRA_SHEET1_COLS = [
+    ACTIVITY_ID_HEADER, PHASH_HEADER, STATUS_HEADER, DELETED_AT_HEADER, DELETED_BY_HEADER,
+]
+
+LOG_TAB = "Log"                                    # แท็บบันทึกการกระทำ (audit log)
+LOG_HEADER = ["เวลา", "ผู้ทำ", "role", "การกระทำ", "รายละเอียด", "activity_id"]
+AUTO_CLOSE_DAYS = 7                                # กิจกรรมปิดอัตโนมัติเมื่อครบ 7 วันนับจากวันสร้าง
+
 ACTIVITIES_TAB = "Activities"                      # แท็บเก็บรายการกิจกรรม
 USERS_TAB = "Users"                                # แท็บเก็บบัญชี admin
 ACTIVITIES_HEADER = [
@@ -254,10 +452,14 @@ def ensure_schema():
     ss = get_spreadsheet()
     ws = ss.sheet1
     header = ws.row_values(1)
-    if ACTIVITY_ID_HEADER not in header:
-        ws.update_cell(1, len(header) + 1, ACTIVITY_ID_HEADER)  # ต่อท้ายคอลัมน์สุดท้าย
+    # เติมคอลัมน์ที่เพิ่มทีหลังต่อท้ายทีละอัน (idempotent — มีแล้วข้าม) โดยคงลำดับที่กำหนด
+    for col in _EXTRA_SHEET1_COLS:
+        if col not in header:
+            ws.update_cell(1, len(header) + 1, col)
+            header.append(col)
     _ensure_tab(ss, ACTIVITIES_TAB, ACTIVITIES_HEADER)
     _ensure_tab(ss, USERS_TAB, USERS_HEADER)
+    _ensure_tab(ss, LOG_TAB, LOG_HEADER)
 
 
 @st.cache_resource

@@ -7,4 +7,5 @@ google-auth               # ระบบยืนยันตัวตน (OAuth
 google-auth-oauthlib      # ใช้ตอนรันสคริปต์ขอ refresh token (ครั้งเดียว)
 google-api-python-client  # ใช้คุยกับ Google Drive (อัปโหลดรูป)
 Pillow                    # ย่อ/บีบอัดรูป
+piexif                    # อ่าน/เขียน EXIF (ฝัง metadata บริบท + เก็บ EXIF กล้องเดิม)
 pandas                    # จัดการตารางข้อมูล + ทำ Dashboard

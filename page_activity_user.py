@@ -12,9 +12,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
 
-from image_utils import compress_image
+from image_utils import compress_image, compute_phash
 from google_utils import (
-    upload_to_drive, append_activity_row, load_data, get_image_bytes, extract_file_id,
+    upload_to_drive, append_activity_row, load_active_data, get_image_bytes, extract_file_id,
+    make_activity_filename, count_activity_photos, log_action,
 )
 from page_gallery import build_zip, COLS_PER_ROW   # reuse ฟังก์ชันทำ zip + จำนวนคอลัมน์กริด
 
@@ -54,12 +55,21 @@ def _render_send(activity_id, activity_name, sender):
 
     try:
         with st.spinner("กำลังย่อรูปและอัปโหลด..."):
-            compressed = compress_image(image_file)            # 1) ย่อรูป (reuse)
             now = datetime.now(ZoneInfo("Asia/Bangkok"))
             datetime_str = now.strftime("%Y-%m-%d %H:%M:%S")
-            filename = now.strftime("%Y%m%d_%H%M%S") + ".jpg"
-            file_id, link = upload_to_drive(compressed, filename)   # 2) อัป Drive (reuse + retry)
-            append_activity_row(datetime_str, sender, link, filename, activity_id)  # 3) บันทึก
+            # 1) ชื่อไฟล์ตามกิจกรรม: <ชื่อกิจกรรม>_<ลำดับ>_<เวลา>.jpg (ลำดับ = รูปที่มีอยู่ + 1)
+            seq = count_activity_photos(activity_id) + 1
+            filename = make_activity_filename(activity_name, seq, now)
+            # 2) ย่อรูป + ฝัง metadata (บริบท = ชื่อกิจกรรม/ผู้ส่ง/วันเวลา + เก็บ EXIF เดิม)
+            compressed = compress_image(image_file, meta={
+                "description": activity_name,
+                "artist": sender,
+                "datetime": now.strftime("%Y:%m:%d %H:%M:%S"),
+            })
+            phash = compute_phash(compressed.getvalue())        # 3) ลายนิ้วมือรูป (ตรวจซ้ำ)
+            file_id, link = upload_to_drive(compressed, filename)   # 4) อัป Drive (reuse + retry)
+            append_activity_row(datetime_str, sender, link, filename, activity_id, phash)  # 5) บันทึก
+            log_action(sender, "user", "อัปโหลดรูป", detail=filename, activity_id=activity_id)
             st.cache_data.clear()                              # ให้แท็บ "ดูรูป" เห็นทันที
 
         st.success(f"✅ ส่งรูปสำเร็จ! (ไฟล์: {filename})")
@@ -72,7 +82,7 @@ def _render_send(activity_id, activity_name, sender):
 def _render_view(activity_id, activity_name):
     st.subheader(f"🖼️ รูปในกิจกรรม: {activity_name}")
 
-    df = load_data()
+    df = load_active_data()   # ไม่รวมรูปในถังขยะ
     if df.empty or "activity_id" not in df.columns:
         st.info("ยังไม่มีรูปในกิจกรรมนี้ — ไปแท็บ '📤 ส่งรูปเข้ากิจกรรม' เพื่อเพิ่มรูปแรก")
         return

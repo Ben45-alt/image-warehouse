@@ -71,14 +71,14 @@ def render_topbar_logout(label: str = "", show_refresh: bool = False):
 
 
 def find_open_activity(code_plain: str):
-    """หากิจกรรมที่ 'เปิด' อยู่และรหัสตรงกับที่กรอก — คืน dict ของกิจกรรม หรือ None"""
+    """หากิจกรรมที่ 'เปิดอยู่จริง' (สถานะเปิด + ยังไม่หมดอายุ auto-close) และรหัสตรง — คืน dict หรือ None"""
     import google_utils as gu  # import แบบ lazy กัน circular import
     df = gu.load_activities()
     if df.empty:
         return None
     code_hash = hash_secret(code_plain)
     for _, r in df.iterrows():
-        if str(r.get("รหัสเข้า_hash")) == code_hash and str(r.get("สถานะ")) == "เปิด":
+        if str(r.get("รหัสเข้า_hash")) == code_hash and gu.is_activity_open(r):
             return r.to_dict()
     return None
 
@@ -106,11 +106,8 @@ def _login_user():
     """
     import google_utils as gu  # lazy import กัน circular import
 
-    df = gu.load_activities()
-    open_acts = (
-        df[df["สถานะ"].astype(str) == "เปิด"]
-        if (not df.empty and "สถานะ" in df.columns) else df.iloc[0:0]
-    )
+    # เฉพาะกิจกรรมที่ "เปิดอยู่จริง" = สถานะเปิด + ยังไม่หมดอายุ auto-close (7 วันจากวันสร้าง)
+    open_acts = gu.open_activities(gu.load_activities())
     if open_acts.empty:
         st.info("ตอนนี้ยังไม่มีกิจกรรมที่เปิดอยู่ — ติดต่อหัวหน้า/ผู้ดูแลให้เปิดกิจกรรมก่อน")
         return

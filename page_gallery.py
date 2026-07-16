@@ -12,7 +12,8 @@ import pandas as pd
 
 from config import DEPARTMENTS, CATEGORIES
 from google_utils import (
-    load_general_data, download_file_bytes, extract_file_id, get_image_bytes, delete_photo,
+    load_general_data, download_file_bytes, extract_file_id, get_image_bytes,
+    trash_photo, log_action,
 )
 
 PAGE_SIZE = 12          # จำนวนรูปต่อหน้า
@@ -138,14 +139,16 @@ def render():
                 download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
                 st.link_button("⬇️ ดาวน์โหลดรูปนี้", download_url, width="stretch")
 
-                # ปุ่มลบรูป (มีขั้นยืนยันก่อน กันกดพลาด) — ใช้ file_id เป็น key กันชนกันในกริด
+                # ปุ่มลบรูป → ย้ายไปถังขยะ (กู้คืนได้ ~30 วัน) มีขั้นยืนยันกันกดพลาด
                 del_key = f"confirm_del_{file_id}"
                 if st.session_state.get(del_key):
-                    st.warning("⚠️ ลบรูปนี้ถาวร?")
+                    st.warning("⚠️ ย้ายรูปนี้ไปถังขยะ? (กู้คืนได้ ~30 วัน — แจ้งผู้ดูแลให้กู้)")
                     yes, no = st.columns(2)
-                    if yes.button("✅ ลบเลย", key=f"yes_{file_id}", width="stretch"):
+                    if yes.button("✅ ย้ายไปถังขยะ", key=f"yes_{file_id}", width="stretch"):
                         try:
-                            delete_photo(file_id, item["ลิงก์รูป"])
+                            trash_photo(file_id, item["ลิงก์รูป"], deleted_by="คลังทั่วไป")
+                            log_action("คลังทั่วไป", "general", "ลบรูป(ถังขยะ)",
+                                       detail=str(item.get("ชื่อไฟล์", "")))
                             st.session_state.pop(del_key, None)
                             st.cache_data.clear()  # ล้าง cache ให้รายการหายทันที
                             st.rerun()
