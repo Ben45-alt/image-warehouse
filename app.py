@@ -18,6 +18,7 @@ import page_upload
 import page_gallery
 import page_dashboard
 import page_activity_user
+import page_activity_viewer
 import page_activity_admin
 import page_activity_superuser
 import auth
@@ -80,9 +81,15 @@ def main():
 
     elif role == "user":
         auth.render_topbar_logout(
-            f"🎯 กิจกรรม: {ident.get('activity_name','')} · คุณ: {ident.get('name','')}"
+            f"📤 ส่งรูปเข้ากิจกรรม: {ident.get('activity_name','')} · คุณ: {ident.get('name','')}"
         )
         page_activity_user.render()
+
+    elif role == "viewer":
+        auth.render_topbar_logout(
+            f"🖼️ ดูอัลบั้ม: {ident.get('activity_name','')} · {ident.get('viewer_name','')}"
+        )
+        page_activity_viewer.render()
 
     elif role == "admin":
         auth.render_topbar_logout(f"🛠️ admin: {ident.get('fullname') or ident.get('username','')}")

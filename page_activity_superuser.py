@@ -27,8 +27,8 @@ from google_utils import (
     delete_photo, trash_photo, restore_photo, log_action,
 )
 from page_gallery import build_zip, COLS_PER_ROW
-# reuse ตรรกะ "สร้างกิจกรรม" จากหน้า admin (กันรหัสซ้ำ/สุ่มรหัส/โชว์รหัสให้ก๊อป) จะได้ไม่เขียนซ้ำ
-from page_activity_admin import _create_activity
+# reuse จากหน้า admin: สร้างกิจกรรม (กันรหัสซ้ำ/สุ่มรหัส) + กล่องแชร์อัลบั้ม จะได้ไม่เขียนซ้ำ
+from page_activity_admin import _create_activity, render_share_panel
 
 import page_upload
 import page_gallery
@@ -239,6 +239,10 @@ def _render_manage_activities():
             if c3.button("🗑️ ลบกิจกรรม", key=f"su_delact_{aid}", width="stretch"):
                 st.session_state[del_key] = True
                 st.rerun()
+
+        # กล่องแชร์อัลบั้ม (superuser จัดการได้ทุกกิจกรรม)
+        render_share_panel(aid, str(a["ชื่อกิจกรรม"]), "su")
+        st.divider()
 
 
 # ==========================================================================

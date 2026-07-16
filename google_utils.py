@@ -419,10 +419,18 @@ LOG_TAB = "Log"                                    # แท็บบันทึ
 LOG_HEADER = ["เวลา", "ผู้ทำ", "role", "การกระทำ", "รายละเอียด", "activity_id"]
 AUTO_CLOSE_DAYS = 7                                # กิจกรรมปิดอัตโนมัติเมื่อครบ 7 วันนับจากวันสร้าง
 
+# การแชร์อัลบั้ม (Round 3): เจ้าของคุมว่าใครดูอัลบั้มได้
+VISIBILITY_HEADER = "การมองเห็น"                     # คอลัมน์เพิ่มในแท็บ Activities
+VIS_PUBLIC = "ทุกคน"                                # อัลบั้มสาธารณะ — ใครก็ดูได้
+VIS_PRIVATE = "เฉพาะคน"                             # อัลบั้มเฉพาะคนที่แชร์ (ค่าเริ่มต้น)
+SHARES_TAB = "Shares"                              # แท็บเก็บรายชื่อคนที่แชร์ให้ดู + รหัสดูส่วนตัว
+SHARES_HEADER = ["activity_id", "ชื่อผู้ดู", "รหัสดู_hash", "วันที่เพิ่ม", "สถานะ"]
+
 ACTIVITIES_TAB = "Activities"                      # แท็บเก็บรายการกิจกรรม
 USERS_TAB = "Users"                                # แท็บเก็บบัญชี admin
 ACTIVITIES_HEADER = [
     "activity_id", "ชื่อกิจกรรม", "รหัสเข้า_hash", "คนสร้าง", "วันที่สร้าง", "สถานะ",
+    VISIBILITY_HEADER,
 ]
 USERS_HEADER = ["username", "password_hash", "ชื่อ-นามสกุล", "role", "สถานะ"]
 
@@ -460,9 +468,14 @@ def ensure_schema():
         if col not in header:
             ws.update_cell(1, len(header) + 1, col)
             header.append(col)
-    _ensure_tab(ss, ACTIVITIES_TAB, ACTIVITIES_HEADER)
+    # แท็บ Activities: สร้างถ้ายังไม่มี + เพิ่มคอลัมน์ "การมองเห็น" ให้ชีตเก่าที่ยังไม่มี
+    aws = _ensure_tab(ss, ACTIVITIES_TAB, ACTIVITIES_HEADER)
+    ahead = aws.row_values(1)
+    if VISIBILITY_HEADER not in ahead:
+        aws.update_cell(1, len(ahead) + 1, VISIBILITY_HEADER)
     _ensure_tab(ss, USERS_TAB, USERS_HEADER)
     _ensure_tab(ss, LOG_TAB, LOG_HEADER)
+    _ensure_tab(ss, SHARES_TAB, SHARES_HEADER)
 
 
 @st.cache_resource
@@ -493,11 +506,12 @@ def load_activities() -> pd.DataFrame:
     return pd.DataFrame(get_activities_ws().get_all_records())
 
 
-def add_activity(activity_id, name, code_hash, creator, created_date, status="เปิด"):
-    """เพิ่มกิจกรรมใหม่ 1 รายการ (รหัสเข้าเก็บเป็น hash แล้ว)"""
+def add_activity(activity_id, name, code_hash, creator, created_date, status="เปิด",
+                 visibility=VIS_PRIVATE):
+    """เพิ่มกิจกรรมใหม่ 1 รายการ (รหัสเข้าเก็บเป็น hash แล้ว) — ค่าเริ่มต้นอัลบั้ม = เฉพาะคน (private)"""
     ws = get_activities_ws()
     _retry(lambda: ws.append_row(
-        [activity_id, name, code_hash, creator, created_date, status],
+        [activity_id, name, code_hash, creator, created_date, status, visibility],
         value_input_option="USER_ENTERED",
     ))
     load_activities.clear()  # ล้าง cache เพื่อให้รายการใหม่ขึ้นทันที
@@ -538,6 +552,83 @@ def delete_activity(activity_id):
     load_data.clear()
     load_activities.clear()
     return deleted
+
+
+# ---------- การแชร์อัลบั้ม (visibility + Shares) ----------
+def get_activity_visibility(activity_id) -> str:
+    """อัลบั้มกิจกรรมนี้แชร์แบบไหน — คืน VIS_PUBLIC/VIS_PRIVATE (ค่าว่าง/ไม่มี = เฉพาะคน)"""
+    df = load_activities()
+    if df.empty or VISIBILITY_HEADER not in df.columns:
+        return VIS_PRIVATE
+    m = df[df["activity_id"].astype(str) == str(activity_id)]
+    if m.empty:
+        return VIS_PRIVATE
+    v = str(m.iloc[0].get(VISIBILITY_HEADER, "")).strip()
+    return v if v in (VIS_PUBLIC, VIS_PRIVATE) else VIS_PRIVATE
+
+
+def set_activity_visibility(activity_id, visibility) -> None:
+    """ตั้งค่าการมองเห็นอัลบั้ม (ทุกคน/เฉพาะคน) — หาแถวจาก activity_id แก้คอลัมน์ การมองเห็น"""
+    ws = get_activities_ws()
+    header = ws.row_values(1)
+    row = _find_row(ws, activity_id, 1)
+    if row and VISIBILITY_HEADER in header:
+        col = header.index(VISIBILITY_HEADER) + 1
+        _retry(lambda: ws.update_cell(row, col, visibility))
+        load_activities.clear()
+
+
+def public_activities() -> pd.DataFrame:
+    """กิจกรรมที่ตั้งเป็น 'ทุกคน' (อัลบั้มสาธารณะ) — ทุกสถานะ (เปิด/ปิดก็ดูได้)"""
+    df = load_activities()
+    if df.empty or VISIBILITY_HEADER not in df.columns:
+        return df.iloc[0:0] if not df.empty else pd.DataFrame()
+    return df[df[VISIBILITY_HEADER].astype(str).str.strip() == VIS_PUBLIC].copy()
+
+
+@st.cache_resource
+def get_shares_ws():
+    """worksheet ของแท็บ Shares (รายชื่อคนที่แชร์อัลบั้มให้ดู)"""
+    return get_spreadsheet().worksheet(SHARES_TAB)
+
+
+@st.cache_data(ttl=60)
+def load_shares() -> pd.DataFrame:
+    """อ่านรายการแชร์ทั้งหมดเป็น DataFrame (cache 60 วิ)"""
+    return pd.DataFrame(get_shares_ws().get_all_records())
+
+
+def add_share(activity_id, viewer_name, code_hash, when) -> None:
+    """เพิ่มคนที่ให้ดูอัลบั้ม 1 คน (รหัสดูเก็บเป็น hash)"""
+    ws = get_shares_ws()
+    _retry(lambda: ws.append_row(
+        [activity_id, viewer_name, code_hash, when, "ใช้งาน"],
+        value_input_option="USER_ENTERED",
+    ))
+    load_shares.clear()
+
+
+def activity_shares(activity_id) -> pd.DataFrame:
+    """รายชื่อคนที่แชร์อัลบั้มของกิจกรรมนี้ (เฉพาะที่ยังใช้งาน)"""
+    df = load_shares()
+    if df.empty or "activity_id" not in df.columns:
+        return df.iloc[0:0] if not df.empty else pd.DataFrame()
+    sub = df[df["activity_id"].astype(str) == str(activity_id)]
+    if "สถานะ" in sub.columns:
+        sub = sub[sub["สถานะ"].astype(str) != "ปิด"]
+    return sub.copy()
+
+
+def delete_share(activity_id, viewer_name) -> bool:
+    """ถอนสิทธิ์คนดู 1 คน — ลบแถวใน Shares ที่ activity_id + ชื่อผู้ดู ตรงกัน (แถวแรกที่เจอ)"""
+    ws = get_shares_ws()
+    values = ws.get_all_values()  # รวมหัวตาราง (แถว 1)
+    for i, r in enumerate(values[1:], start=2):
+        if len(r) >= 2 and r[0] == str(activity_id) and r[1] == str(viewer_name):
+            _retry(lambda rr=i: ws.delete_rows(rr))
+            load_shares.clear()
+            return True
+    return False
 
 
 # ---------- Users (บัญชี admin) ----------

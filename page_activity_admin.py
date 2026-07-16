@@ -21,6 +21,8 @@ from google_utils import (
     load_activities, add_activity, set_activity_status, delete_activity,
     load_data, load_active_data, load_trash_data,
     get_image_bytes, extract_file_id, trash_photo, restore_photo, log_action, is_activity_open,
+    get_activity_visibility, set_activity_visibility, activity_shares, add_share, delete_share,
+    VIS_PUBLIC, VIS_PRIVATE,
 )
 from page_gallery import build_zip, COLS_PER_ROW
 
@@ -141,6 +143,10 @@ def _render_activities(username):
                 if c3.button("🗑️ ลบกิจกรรม", key=f"adm_delact_{aid}", width="stretch"):
                     st.session_state[del_key] = True
                     st.rerun()
+
+        # กล่องแชร์อัลบั้ม (ทุกคน/เฉพาะคน + รายชื่อคนดู + รหัสส่วนตัว)
+        render_share_panel(aid, str(a["ชื่อกิจกรรม"]), "adm")
+        st.divider()
 
 
 def _create_activity(username, name, code):
@@ -334,6 +340,78 @@ def _render_dashboard(username):
     id2name = dict(zip(mine["activity_id"].astype(str), mine["ชื่อกิจกรรม"].astype(str)))
     counts = my_photos["activity_id"].astype(str).map(id2name).value_counts()
     st.bar_chart(counts)
+
+
+# --------------------------------------------------------------------------
+# กล่องแชร์อัลบั้ม (ใช้ร่วมกันทั้งหน้า admin และ superuser)
+# --------------------------------------------------------------------------
+def render_share_panel(activity_id, activity_name, key_prefix):
+    """
+    กล่องตั้งค่าการแชร์อัลบั้มของ 1 กิจกรรม:
+      - เลือก 🌐 ทุกคนดูได้ / 👤 เฉพาะคนที่เพิ่ม
+      - ถ้าเฉพาะคน: เพิ่มคนดู (ระบบออกรหัสส่วนตัวให้ก๊อปแจก) + ถอนสิทธิ์รายคน
+    key_prefix กันชน key ระหว่างหน้า admin ("adm") กับ superuser ("su")
+    """
+    with st.expander(f"🔗 แชร์อัลบั้ม: {activity_name}"):
+        cur = get_activity_visibility(activity_id)
+        options = [VIS_PUBLIC, VIS_PRIVATE]
+        labels = {VIS_PUBLIC: "🌐 ทุกคนดูได้", VIS_PRIVATE: "👤 เฉพาะคนที่เพิ่ม"}
+        idx = options.index(cur) if cur in options else options.index(VIS_PRIVATE)
+        sel = st.radio(
+            "ใครดูอัลบั้มนี้ได้", options, index=idx,
+            format_func=lambda v: labels[v], horizontal=True,
+            key=f"{key_prefix}_vis_{activity_id}",
+        )
+        if sel != cur:
+            set_activity_visibility(activity_id, sel)
+            st.rerun()
+
+        if sel == VIS_PUBLIC:
+            st.caption("🌐 ทุกคนเปิดดูอัลบั้มนี้ได้จากหน้า '🖼️ ดูอัลบั้ม' (ไม่ต้องมีรหัส)")
+            return
+
+        # โหมดเฉพาะคน — จัดการรายชื่อคนดู
+        st.markdown("**เพิ่มคนที่ให้ดู** — ระบบออกรหัสส่วนตัวให้ก๊อปส่งเฉพาะคนนั้น")
+        with st.form(f"{key_prefix}_addshare_{activity_id}", clear_on_submit=True):
+            vname = st.text_input("ชื่อคนที่จะให้ดู")
+            add_ok = st.form_submit_button("+ ออกรหัสให้", width="stretch")
+        if add_ok:
+            _add_share(activity_id, vname, key_prefix)
+
+        last = st.session_state.get(f"{key_prefix}_last_share_{activity_id}")
+        if last:
+            st.success(f"✅ รหัสดูของ “{last['name']}” — ก๊อปส่งให้เขาเปิดที่หน้า 'ดูอัลบั้ม':")
+            st.code(last["code"], language=None)
+            if st.button("รับทราบ / ปิดข้อความ", key=f"{key_prefix}_dismiss_share_{activity_id}"):
+                del st.session_state[f"{key_prefix}_last_share_{activity_id}"]
+                st.rerun()
+
+        shares = activity_shares(activity_id)
+        if shares.empty:
+            st.caption("ยังไม่มีใครถูกแชร์ให้ดู — เพิ่มด้านบน (คนไม่ถูกแชร์เปิดอัลบั้มไม่ได้)")
+        else:
+            st.markdown("**คนที่ดูอัลบั้มนี้ได้:**")
+            for _, s in shares.iterrows():
+                name = str(s.get("ชื่อผู้ดู", ""))
+                cc1, cc2 = st.columns([6, 2])
+                cc1.write(f"• {name} · เพิ่มเมื่อ {s.get('วันที่เพิ่ม','')}")
+                if cc2.button("ถอนสิทธิ์", key=f"{key_prefix}_revoke_{activity_id}_{name}",
+                              width="stretch"):
+                    delete_share(activity_id, name)
+                    st.rerun()
+
+
+def _add_share(activity_id, vname, key_prefix):
+    """ออกรหัสดูส่วนตัวให้คน 1 คน + เก็บลง Shares (hash) + โชว์รหัสจริงให้ก๊อป"""
+    vname = (vname or "").strip()
+    if not vname:
+        st.error("⚠️ กรอกชื่อคนที่จะให้ดูก่อน")
+        return
+    code = _gen_code()
+    now = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d %H:%M:%S")
+    add_share(activity_id, vname, auth.hash_secret(code), now)
+    st.session_state[f"{key_prefix}_last_share_{activity_id}"] = {"name": vname, "code": code}
+    st.rerun()
 
 
 # --------------------------------------------------------------------------

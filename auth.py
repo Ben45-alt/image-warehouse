@@ -185,6 +185,97 @@ def _login_staff():
     st.error("❌ ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
 
 
+def find_share_by_code(code_plain: str):
+    """หา 'การแชร์อัลบั้ม' ที่รหัสดูส่วนตัวตรง + ยังไม่ถูกถอนสิทธิ์ — คืน dict (activity_id, ชื่อผู้ดู) หรือ None"""
+    import google_utils as gu  # lazy import กัน circular import
+    df = gu.load_shares()
+    if df.empty or "รหัสดู_hash" not in df.columns:
+        return None
+    code_hash = hash_secret(code_plain)
+    for _, r in df.iterrows():
+        if str(r.get("รหัสดู_hash")) == code_hash and str(r.get("สถานะ")) != "ปิด":
+            return r.to_dict()
+    return None
+
+
+def _render_activity_menu():
+    """เมนูย่อยของ 'กิจกรรม' — เลือกว่าจะ ส่งรูป หรือ ดูอัลบั้ม"""
+    st.subheader("🎯 กิจกรรม")
+    st.caption("เลือกสิ่งที่ต้องการทำ")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### 📤 ส่งรูป")
+        st.write("มีรหัสกิจกรรม — ถ่าย/ส่งรูปเข้ากิจกรรม")
+        if st.button("ส่งรูปเข้ากิจกรรม", width="stretch", key="b_act_send"):
+            st.session_state["view"] = "user"
+            st.rerun()
+    with c2:
+        st.markdown("### 🖼️ ดูอัลบั้ม")
+        st.write("ดูรูปในอัลบั้ม (สาธารณะ หรือถูกแชร์ให้ดู)")
+        if st.button("ดูอัลบั้มกิจกรรม", width="stretch", key="b_act_view"):
+            st.session_state["view"] = "viewer"
+            st.rerun()
+
+
+def _login_viewer():
+    """
+    ดูอัลบั้มกิจกรรม 2 ทาง:
+      1) อัลบั้มสาธารณะ (visibility=ทุกคน) — กดชื่อเข้าดูได้เลย ไม่ต้องมีรหัส
+      2) รหัสดูส่วนตัว (ถูกแชร์เฉพาะคน) — กรอกรหัส → เข้าอัลบั้มที่ถูกแชร์
+    """
+    import google_utils as gu  # lazy import กัน circular import
+
+    # ----- 1) อัลบั้มสาธารณะ -----
+    st.markdown("**อัลบั้มสาธารณะ (ใครก็ดูได้)**")
+    pub = gu.public_activities()
+    if pub.empty:
+        st.caption("— ยังไม่มีอัลบั้มสาธารณะ —")
+    else:
+        for _, a in pub.iterrows():
+            aid = str(a["activity_id"])
+            nm = str(a["ชื่อกิจกรรม"])
+            if st.button(f"🖼️ {nm}", key=f"pubalbum_{aid}", width="stretch"):
+                st.session_state["role"] = "viewer"
+                st.session_state["identity"] = {
+                    "activity_id": aid, "activity_name": nm, "viewer_name": "(สาธารณะ)",
+                }
+                st.session_state["view"] = None
+                st.rerun()
+
+    st.divider()
+
+    # ----- 2) รหัสดูส่วนตัว -----
+    st.markdown("**มีรหัสดูส่วนตัว? (ถูกแชร์เฉพาะคน)**")
+    with st.form("login_viewer"):
+        code = st.text_input("รหัสดูอัลบั้ม")
+        ok = st.form_submit_button("เปิดดูอัลบั้ม", width="stretch")
+    if not ok:
+        return
+    if not code.strip():
+        st.error("⚠️ กรอกรหัสดูก่อน")
+        return
+    share = find_share_by_code(code.strip())
+    if not share:
+        st.error("❌ รหัสไม่ถูกต้อง หรือถูกถอนสิทธิ์แล้ว")
+        return
+
+    aid = str(share.get("activity_id"))
+    # หาชื่อกิจกรรมจาก activity_id
+    acts = gu.load_activities()
+    nm = ""
+    if not acts.empty and "activity_id" in acts.columns:
+        m = acts[acts["activity_id"].astype(str) == aid]
+        if not m.empty:
+            nm = str(m.iloc[0]["ชื่อกิจกรรม"])
+    st.session_state["role"] = "viewer"
+    st.session_state["identity"] = {
+        "activity_id": aid, "activity_name": nm,
+        "viewer_name": str(share.get("ชื่อผู้ดู", "")),
+    }
+    st.session_state["view"] = None
+    st.rerun()
+
+
 def render_landing():
     """หน้าแรก: เลือกประเภทการเข้าใช้ → แสดงฟอร์ม login ที่เลือก"""
     view = st.session_state.get("view")
@@ -201,10 +292,10 @@ def render_landing():
                 st.session_state["view"] = "general"
                 st.rerun()
         with c2:
-            st.markdown("### 🎯 เข้าร่วมกิจกรรม")
-            st.write("มีรหัสกิจกรรม — เข้าถ่ายรูปส่ง")
-            if st.button("เข้าร่วมกิจกรรม", width="stretch", key="b_user"):
-                st.session_state["view"] = "user"
+            st.markdown("### 🎯 กิจกรรม")
+            st.write("ส่งรูปเข้ากิจกรรม หรือดูอัลบั้ม")
+            if st.button("เข้าหน้ากิจกรรม", width="stretch", key="b_activity"):
+                st.session_state["view"] = "activity"
                 st.rerun()
         with c3:
             st.markdown("### 🔐 เข้าสู่ระบบ")
@@ -222,9 +313,14 @@ def render_landing():
     if view == "general":
         st.subheader("📁 เข้าคลังภาพทั่วไป")
         _login_general()
+    elif view == "activity":
+        _render_activity_menu()
     elif view == "user":
-        st.subheader("🎯 เข้าร่วมกิจกรรม")
+        st.subheader("📤 ส่งรูปเข้ากิจกรรม")
         _login_user()
+    elif view == "viewer":
+        st.subheader("🖼️ ดูอัลบั้มกิจกรรม")
+        _login_viewer()
     elif view == "staff":
         st.subheader("🔐 เข้าสู่ระบบ (admin / ผู้ดูแล)")
         _login_staff()
