@@ -38,6 +38,20 @@ def verify_secret(plain: str, hashed: str) -> bool:
     return hmac.compare_digest(hash_secret(plain), str(hashed))
 
 
+def secrets_equal(a, b) -> bool:
+    """
+    เทียบรหัส 2 ตัวว่าตรงกันไหม แบบกัน timing attack — ใช้กับรหัสที่เก็บเป็น plain ใน secrets
+
+    ⚠️ ห้ามเรียก hmac.compare_digest() กับสตริงตรงๆ: มันรองรับเฉพาะ ASCII
+    ถ้ามีอักขระ non-ASCII (เช่นพิมพ์ตอนแป้นค้างภาษาไทย) จะโยน TypeError ใส่หน้าผู้ใช้
+    แทนที่จะคืน False → เลย hash เป็น bytes ก่อน แล้วค่อยเทียบ (รับอักขระอะไรก็ได้)
+    """
+    return hmac.compare_digest(
+        hashlib.sha256(str(a).encode("utf-8")).digest(),
+        hashlib.sha256(str(b).encode("utf-8")).digest(),
+    )
+
+
 # ===========================================================================
 # ระบบ Session + Login (ใช้ในหน้าแรก/router ของแอป)
 # role ที่เป็นไปได้: None(ยังไม่ login) / "general" / "user" / "admin" / "superuser"
@@ -170,7 +184,7 @@ def _login_staff():
     # 1) เช็ค superuser ก่อน (รหัสอยู่ใน secrets, เก็บเป็น plain ได้เพราะ secrets ปลอดภัย)
     su_user = st.secrets.get("SUPERUSER_USER", "")
     su_pass = st.secrets.get("SUPERUSER_PASS", "")
-    if username and username == su_user and hmac.compare_digest(p, su_pass):
+    if username and username == su_user and secrets_equal(p, su_pass):
         st.session_state["role"] = "superuser"
         st.session_state["identity"] = {"username": username}
         st.session_state["view"] = None
