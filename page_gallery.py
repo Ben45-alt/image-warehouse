@@ -1,7 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-page_gallery.py — หน้า "คลังภาพ"
-มี filter (แผนก/หมวด/ช่วงวันที่/คำค้น) + แสดงเป็น grid + ดาวน์โหลดเดี่ยว/zip + แบ่งหน้า
+page_gallery.py — หน้า "คลังภาพ" แบบโฟลเดอร์ 2 ชั้น
+
+ชั้นนอก (หน้าโฟลเดอร์):
+  - 📁 แผนก — โชว์เฉพาะแผนกที่มีรูป (กดปุ่มเพื่อดูแผนกที่ยังไม่มีรูปได้)
+  - 🎉 รูปจากกิจกรรม — กิจกรรมที่ admin กด "เผยแพร่เข้าคลังทั่วไป" ไว้ (1 กิจกรรม = 1 โฟลเดอร์)
+ชั้นใน (เปิดโฟลเดอร์): กริดรูป + ดาวน์โหลดเดี่ยว/zip + แบ่งหน้า
+  - โฟลเดอร์แผนก   → กรองหมวด/คำค้น/ช่วงวันที่ได้ + ลบรูปได้ (ของคลังทั่วไปเอง)
+  - โฟลเดอร์กิจกรรม → ดู+โหลดอย่างเดียว "ลบไม่ได้" (เจ้าของตัวจริงคือฝั่งกิจกรรม)
+
+ไม่ใช้รูปปกในการ์ดโฟลเดอร์ตั้งใจ — ทุกรูปต้องโหลด bytes จริงจาก Drive (hotlink thumbnail
+ของ Google ใช้ไม่ได้) ถ้าใส่รูปปกจะต้องโหลดรูปเท่าจำนวนโฟลเดอร์ก่อนหน้าจะขึ้น = ช้าเมื่อรูปเยอะ
 """
 
 import io
@@ -12,12 +21,15 @@ import pandas as pd
 
 from config import DEPARTMENTS, CATEGORIES
 from google_utils import (
-    load_general_data, download_file_bytes, extract_file_id, get_image_bytes,
+    load_general_data, load_published_activity_data, load_activities,
+    download_file_bytes, extract_file_id, get_image_bytes,
     trash_photo, log_action,
 )
 
 PAGE_SIZE = 12          # จำนวนรูปต่อหน้า
 COLS_PER_ROW = 4        # จำนวนรูปต่อแถว
+FOLDER_KEY = "gal_folder"       # โฟลเดอร์ที่เปิดอยู่: None | ("dep", ชื่อแผนก) | ("act", activity_id)
+SHOW_EMPTY_KEY = "gal_show_empty_deps"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -39,86 +51,218 @@ def build_zip(items: tuple) -> bytes:
 
 
 def render():
+    folder = st.session_state.get(FOLDER_KEY)
+    if not folder:
+        _render_home()
+        return
+    kind, value = folder
+    if kind == "dep":
+        _render_department(value)
+    else:
+        _render_activity_folder(value)
+
+
+# ==========================================================================
+# ชั้นนอก: หน้าโฟลเดอร์
+# ==========================================================================
+def _render_home():
     st.subheader("🖼️ คลังภาพ")
 
-    df = load_general_data()   # เฉพาะคลังทั่วไป (กันรูปกิจกรรมหลุดมาปน)
-    if df.empty:
+    general = load_general_data()
+    counts = {}
+    if not general.empty and "แผนก" in general.columns:
+        counts = general["แผนก"].astype(str).value_counts().to_dict()
+
+    # ลำดับแผนก: ตาม config ก่อน แล้วต่อด้วยแผนกที่โผล่ในข้อมูลแต่ไม่มีใน config (ข้อมูลเก่า)
+    extras = [d for d in counts if d and d not in DEPARTMENTS]
+    all_deps = DEPARTMENTS + sorted(extras)
+
+    show_empty = st.session_state.get(SHOW_EMPTY_KEY, False)
+    deps = all_deps if show_empty else [d for d in all_deps if counts.get(d, 0) > 0]
+
+    st.markdown("**📂 แผนก**")
+    if not deps:
         st.info("ยังไม่มีรูปในคลัง — ไปที่หน้า '📤 ส่งรูป' เพื่อเพิ่มรูปแรกได้เลย")
-        return
-
-    # แปลงคอลัมน์วันเวลาเป็นชนิดวันที่ (ไว้ filter ช่วงวันและเรียงลำดับ)
-    df["_dt"] = pd.to_datetime(df["วันเวลา"], errors="coerce")
-
-    # ---------------- แถบ Filter ----------------
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        dep = st.selectbox("แผนก", ["ทั้งหมด"] + DEPARTMENTS)
-    with c2:
-        cat = st.selectbox("หมวด", ["ทั้งหมด"] + CATEGORIES)
-    with c3:
-        keyword = st.text_input("คำค้น (ชื่อเรื่อง / แท็ก)")
-
-    # ช่วงวันที่ (ตั้งค่าเริ่มต้นจากข้อมูลจริง)
-    valid_dates = df["_dt"].dropna()
-    if valid_dates.empty:
-        date_range = ()
     else:
-        min_d = valid_dates.min().date()
-        max_d = valid_dates.max().date()
-        date_range = st.date_input("ช่วงวันที่", value=(min_d, max_d))
+        _folder_grid([
+            {"title": d, "count": counts.get(d, 0), "value": ("dep", d), "key": f"gal_dep_{d}"}
+            for d in deps
+        ])
 
-    # ---------------- กรองข้อมูลตามเงื่อนไข ----------------
-    filtered = df.copy()
-    if dep != "ทั้งหมด":
-        filtered = filtered[filtered["แผนก"] == dep]
-    if cat != "ทั้งหมด":
-        filtered = filtered[filtered["หมวด"] == cat]
-    if keyword.strip():
-        kw = keyword.strip().lower()
-        title_match = filtered["ชื่อเรื่อง"].astype(str).str.lower().str.contains(kw)
-        tag_match = filtered["แท็ก"].astype(str).str.lower().str.contains(kw)
-        filtered = filtered[title_match | tag_match]
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        start, end = date_range
-        filtered = filtered[
-            (filtered["_dt"].dt.date >= start) & (filtered["_dt"].dt.date <= end)
-        ]
-
-    # เรียงรูปใหม่สุดขึ้นก่อน
-    filtered = filtered.sort_values("_dt", ascending=False)
-
-    st.markdown(f"**พบ {len(filtered)} รูป**")
-    if filtered.empty:
-        st.warning("ไม่พบรูปที่ตรงกับเงื่อนไข ลองปรับ filter ดูครับ")
-        return
-
-    # ---------------- ปุ่มดาวน์โหลดทั้งหมดเป็น ZIP ----------------
-    if st.button("📦 เตรียมไฟล์ ZIP ของรูปที่ filter ทั้งหมด"):
-        with st.spinner("กำลังรวมรูปเป็นไฟล์ ZIP..."):
-            items = tuple(
-                (extract_file_id(r["ลิงก์รูป"]), r["ชื่อไฟล์"])
-                for _, r in filtered.iterrows()
-            )
-            st.session_state["zip_bytes"] = build_zip(items)
-    if st.session_state.get("zip_bytes"):
-        st.download_button(
-            "⬇️ ดาวน์โหลด .zip",
-            data=st.session_state["zip_bytes"],
-            file_name="images.zip",
-            mime="application/zip",
-        )
+    n_empty = len(all_deps) - len([d for d in all_deps if counts.get(d, 0) > 0])
+    if n_empty > 0:
+        label = "🔽 ซ่อนแผนกที่ยังไม่มีรูป" if show_empty else f"➕ แสดงแผนกที่ยังไม่มีรูป ({n_empty})"
+        if st.button(label, key="gal_toggle_empty"):
+            st.session_state[SHOW_EMPTY_KEY] = not show_empty
+            st.rerun()
 
     st.divider()
 
-    # ---------------- แบ่งหน้า (Pagination) ----------------
-    total = len(filtered)
-    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    page = st.number_input("หน้า", min_value=1, max_value=total_pages, value=1, step=1)
-    start_i = (page - 1) * PAGE_SIZE
-    page_df = filtered.iloc[start_i:start_i + PAGE_SIZE]
-    st.caption(f"หน้า {page}/{total_pages}")
+    # ---------- โฟลเดอร์กิจกรรมที่เผยแพร่ ----------
+    st.markdown("**🎉 รูปจากกิจกรรม (ที่เผยแพร่แล้ว)**")
+    pub = load_published_activity_data()
+    if pub.empty:
+        st.caption("ยังไม่มีรูปจากกิจกรรมที่ถูกเผยแพร่เข้าคลังทั่วไป")
+        return
 
-    # ---------------- แสดงผลแบบ Grid ----------------
+    id2name = _activity_names()
+    act_counts = pub["activity_id"].astype(str).value_counts().to_dict()
+    _folder_grid([
+        {
+            "title": id2name.get(aid, aid),
+            "count": n,
+            "value": ("act", aid),
+            "key": f"gal_act_{aid}",
+        }
+        for aid, n in act_counts.items()
+    ])
+
+
+def _folder_grid(folders: list):
+    """วางการ์ดโฟลเดอร์เป็นกริด (ไม่มีรูปปก — ไอคอน + ชื่อ + จำนวนรูป เพื่อให้เปิดหน้าไว)"""
+    for i in range(0, len(folders), COLS_PER_ROW):
+        cols = st.columns(COLS_PER_ROW)
+        for col, f in zip(cols, folders[i:i + COLS_PER_ROW]):
+            with col:
+                with st.container(border=True):
+                    st.markdown("### 📁")
+                    st.markdown(f"**{f['title']}**")
+                    st.caption(f"{f['count']} รูป")
+                    if st.button("เปิด", key=f["key"], width="stretch"):
+                        st.session_state[FOLDER_KEY] = f["value"]
+                        st.rerun()
+
+
+def _back_button():
+    if st.button("⬅️ กลับไปหน้าโฟลเดอร์", key="gal_back"):
+        st.session_state.pop(FOLDER_KEY, None)
+        st.rerun()
+
+
+def _activity_names() -> dict:
+    """map activity_id → ชื่อกิจกรรม (ไว้ตั้งชื่อโฟลเดอร์)"""
+    acts = load_activities()
+    if acts.empty or "activity_id" not in acts.columns:
+        return {}
+    return dict(zip(acts["activity_id"].astype(str), acts["ชื่อกิจกรรม"].astype(str)))
+
+
+# ==========================================================================
+# ชั้นใน: โฟลเดอร์แผนก (คลังทั่วไปเดิม — กรองหมวด/ค้นหา/ลบได้)
+# ==========================================================================
+def _render_department(dep: str):
+    _back_button()
+    st.subheader(f"📁 {dep}")
+
+    df = load_general_data()
+    if not df.empty and "แผนก" in df.columns:
+        df = df[df["แผนก"].astype(str) == str(dep)].copy()
+    if df.empty:
+        st.info("ยังไม่มีรูปในแผนกนี้")
+        return
+
+    df["_dt"] = pd.to_datetime(df["วันเวลา"], errors="coerce")
+
+    # กรองหมวด — ปุ่มเรียงแนวนอน (ไม่ทำเป็นโฟลเดอร์อีกชั้น จะได้ไม่ต้องกดลึก)
+    cat = st.radio("หมวด", ["ทั้งหมด"] + CATEGORIES, horizontal=True, key=f"gal_cat_{dep}")
+    if cat != "ทั้งหมด":
+        df = df[df["หมวด"].astype(str) == cat]
+
+    with st.expander("🔍 ตัวกรองเพิ่มเติม (คำค้น / ช่วงวันที่)"):
+        keyword = st.text_input("คำค้น (ชื่อเรื่อง / แท็ก)", key=f"gal_kw_{dep}")
+        valid_dates = df["_dt"].dropna()
+        date_range = ()
+        if not valid_dates.empty:
+            date_range = st.date_input(
+                "ช่วงวันที่",
+                value=(valid_dates.min().date(), valid_dates.max().date()),
+                key=f"gal_date_{dep}",
+            )
+
+    if keyword.strip():
+        kw = keyword.strip().lower()
+        title_match = df["ชื่อเรื่อง"].astype(str).str.lower().str.contains(kw)
+        tag_match = df["แท็ก"].astype(str).str.lower().str.contains(kw)
+        df = df[title_match | tag_match]
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start, end = date_range
+        df = df[(df["_dt"].dt.date >= start) & (df["_dt"].dt.date <= end)]
+
+    df = df.sort_values("_dt", ascending=False)
+    st.markdown(f"**พบ {len(df)} รูป**")
+    if df.empty:
+        st.warning("ไม่พบรูปที่ตรงกับเงื่อนไข ลองปรับตัวกรองดูครับ")
+        return
+
+    _zip_button(df, key_prefix=f"gal_dep_{dep}", filename="images.zip")
+    st.divider()
+    page_df = _paginate(df, key=f"gal_page_dep_{dep}")
+    _photo_grid(page_df, allow_delete=True, kind="dep")
+
+
+# ==========================================================================
+# ชั้นใน: โฟลเดอร์กิจกรรมที่เผยแพร่ (ดู + โหลดเท่านั้น ลบไม่ได้)
+# ==========================================================================
+def _render_activity_folder(aid: str):
+    _back_button()
+    name = _activity_names().get(str(aid), str(aid))
+    st.subheader(f"📁 {name}")
+    st.caption("รูปจากกิจกรรมที่ผู้ดูแลเผยแพร่ให้ดูได้ — ดาวน์โหลดได้ แต่ลบจากที่นี่ไม่ได้")
+
+    df = load_published_activity_data()
+    if not df.empty:
+        df = df[df["activity_id"].astype(str) == str(aid)].copy()
+    if df.empty:
+        # เจ้าของอาจยกเลิกเผยแพร่/ลบรูปไปหลังหน้าโหลด → โฟลเดอร์ว่างได้
+        st.info("ไม่มีรูปที่เผยแพร่ในกิจกรรมนี้แล้ว")
+        return
+
+    df["_dt"] = pd.to_datetime(df["วันเวลา"], errors="coerce")
+    df = df.sort_values("_dt", ascending=False)
+    st.markdown(f"**พบ {len(df)} รูป**")
+
+    _zip_button(df, key_prefix=f"gal_act_{aid}", filename="activity_photos.zip")
+    st.divider()
+    page_df = _paginate(df, key=f"gal_page_act_{aid}")
+    _photo_grid(page_df, allow_delete=False, kind="act")
+
+
+# ==========================================================================
+# ส่วนที่ใช้ร่วมกัน: ZIP / แบ่งหน้า / กริดรูป
+# ==========================================================================
+def _zip_button(df: pd.DataFrame, key_prefix: str, filename: str):
+    """ปุ่มเตรียม ZIP ของรูปทั้งหมดในโฟลเดอร์นี้ (เก็บ bytes ไว้ใน session ต่อโฟลเดอร์)"""
+    bytes_key = f"{key_prefix}_zip_bytes"
+    if st.button("📦 เตรียมไฟล์ ZIP ของรูปในโฟลเดอร์นี้", key=f"{key_prefix}_zip_btn"):
+        with st.spinner("กำลังรวมรูปเป็นไฟล์ ZIP..."):
+            items = tuple(
+                (extract_file_id(r["ลิงก์รูป"]), r["ชื่อไฟล์"]) for _, r in df.iterrows()
+            )
+            st.session_state[bytes_key] = build_zip(items)
+    if st.session_state.get(bytes_key):
+        st.download_button(
+            "⬇️ ดาวน์โหลด .zip",
+            data=st.session_state[bytes_key],
+            file_name=filename,
+            mime="application/zip",
+            key=f"{key_prefix}_zip_dl",
+        )
+
+
+def _paginate(df: pd.DataFrame, key: str) -> pd.DataFrame:
+    """แบ่งหน้า — คืนเฉพาะแถวของหน้าที่เลือก"""
+    total_pages = max(1, (len(df) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = st.number_input("หน้า", min_value=1, max_value=total_pages, value=1, step=1, key=key)
+    start_i = (page - 1) * PAGE_SIZE
+    st.caption(f"หน้า {page}/{total_pages}")
+    return df.iloc[start_i:start_i + PAGE_SIZE]
+
+
+def _photo_grid(page_df: pd.DataFrame, allow_delete: bool, kind: str):
+    """
+    กริดรูป + ดาวน์โหลดเดี่ยว (+ ปุ่มลบถ้า allow_delete)
+    kind = "dep" (รูปคลังทั่วไป โชว์ชื่อเรื่อง/แผนก/หมวด) | "act" (รูปกิจกรรม โชว์ผู้ส่ง)
+    """
     rows = page_df.to_dict("records")
     for i in range(0, len(rows), COLS_PER_ROW):
         cols = st.columns(COLS_PER_ROW)
@@ -130,34 +274,44 @@ def render():
                     st.image(get_image_bytes(file_id), width="stretch")
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
-                st.markdown(
-                    f"**{item['ชื่อเรื่อง']}**  \n"
-                    f"{item['แผนก']} / {item['หมวด']}  \n"
-                    f"🗓️ {item['วันเวลา']}"
-                )
+
+                if kind == "dep":
+                    st.markdown(
+                        f"**{item['ชื่อเรื่อง']}**  \n"
+                        f"{item['แผนก']} / {item['หมวด']}  \n"
+                        f"🗓️ {item['วันเวลา']}"
+                    )
+                else:
+                    st.caption(f"👤 {item.get('ผู้ส่ง','')} · 🗓️ {item.get('วันเวลา','')}")
+
                 # ปุ่มดาวน์โหลดรูปเดี่ยว (เปิดลิงก์ดาวน์โหลดตรงจาก Drive)
                 download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
                 st.link_button("⬇️ ดาวน์โหลดรูปนี้", download_url, width="stretch")
 
-                # ปุ่มลบรูป → ย้ายไปถังขยะ (กู้คืนได้ ~30 วัน) มีขั้นยืนยันกันกดพลาด
-                del_key = f"confirm_del_{file_id}"
-                if st.session_state.get(del_key):
-                    st.warning("⚠️ ย้ายรูปนี้ไปถังขยะ? (กู้คืนได้ ~30 วัน — แจ้งผู้ดูแลให้กู้)")
-                    yes, no = st.columns(2)
-                    if yes.button("✅ ย้ายไปถังขยะ", key=f"yes_{file_id}", width="stretch"):
-                        try:
-                            trash_photo(file_id, item["ลิงก์รูป"], deleted_by="คลังทั่วไป")
-                            log_action("คลังทั่วไป", "general", "ลบรูป(ถังขยะ)",
-                                       detail=str(item.get("ชื่อไฟล์", "")))
-                            st.session_state.pop(del_key, None)
-                            st.cache_data.clear()  # ล้าง cache ให้รายการหายทันที
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"ลบไม่สำเร็จ: {e}")
-                    if no.button("❌ ยกเลิก", key=f"no_{file_id}", width="stretch"):
-                        st.session_state.pop(del_key, None)
-                        st.rerun()
-                else:
-                    if st.button("🗑️ ลบรูปนี้", key=f"del_{file_id}", width="stretch"):
-                        st.session_state[del_key] = True
-                        st.rerun()
+                if allow_delete:
+                    _delete_button(item, file_id)
+
+
+def _delete_button(item: dict, file_id: str):
+    """ปุ่มลบรูป → ย้ายไปถังขยะ (กู้คืนได้ ~30 วัน) มีขั้นยืนยันกันกดพลาด"""
+    del_key = f"confirm_del_{file_id}"
+    if st.session_state.get(del_key):
+        st.warning("⚠️ ย้ายรูปนี้ไปถังขยะ? (กู้คืนได้ ~30 วัน — แจ้งผู้ดูแลให้กู้)")
+        yes, no = st.columns(2)
+        if yes.button("✅ ย้ายไปถังขยะ", key=f"yes_{file_id}", width="stretch"):
+            try:
+                trash_photo(file_id, item["ลิงก์รูป"], deleted_by="คลังทั่วไป")
+                log_action("คลังทั่วไป", "general", "ลบรูป(ถังขยะ)",
+                           detail=str(item.get("ชื่อไฟล์", "")))
+                st.session_state.pop(del_key, None)
+                st.cache_data.clear()  # ล้าง cache ให้รายการหายทันที
+                st.rerun()
+            except Exception as e:
+                st.error(f"ลบไม่สำเร็จ: {e}")
+        if no.button("❌ ยกเลิก", key=f"no_{file_id}", width="stretch"):
+            st.session_state.pop(del_key, None)
+            st.rerun()
+    else:
+        if st.button("🗑️ ลบรูปนี้", key=f"del_{file_id}", width="stretch"):
+            st.session_state[del_key] = True
+            st.rerun()

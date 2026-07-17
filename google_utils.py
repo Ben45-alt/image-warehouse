@@ -342,6 +342,31 @@ def load_general_data() -> pd.DataFrame:
     return df[is_general & _not_trashed_mask(df)].copy()
 
 
+def load_published_activity_data() -> pd.DataFrame:
+    """
+    รูป "ของกิจกรรม" ที่เจ้าของกดเผยแพร่เข้าคลังทั่วไปแล้ว (และไม่อยู่ในถังขยะ)
+    = แถวที่ activity_id มีค่า + คอลัมน์ 'เผยแพร่' = 'ใช่'
+    รูปยังอยู่ในอัลบั้มกิจกรรมตามเดิม — ตัวนี้แค่ให้หน้าคลังทั่วไปหยิบไปโชว์เพิ่มเป็นโฟลเดอร์
+    """
+    df = load_data()
+    if df.empty or ACTIVITY_ID_HEADER not in df.columns or PUBLISHED_HEADER not in df.columns:
+        return df.iloc[0:0] if not df.empty else pd.DataFrame()
+    is_activity = df[ACTIVITY_ID_HEADER].astype(str).str.strip() != ""
+    is_pub = df[PUBLISHED_HEADER].astype(str).str.strip() == PUBLISHED_YES
+    return df[is_activity & is_pub & _not_trashed_mask(df)].copy()
+
+
+def set_photo_published(link: str, published: bool) -> bool:
+    """
+    เปิด/ปิดการเผยแพร่รูป 1 ใบเข้าคลังทั่วไป — แก้แค่คอลัมน์ 'เผยแพร่' ในชีต
+    ไม่แตะไฟล์ใน Drive / ชื่อไฟล์ / metadata และรูปยังอยู่ในอัลบั้มกิจกรรมเหมือนเดิม
+    คืน True ถ้าเจอแถวและอัปเดตแล้ว
+    """
+    ok = _update_row_fields(link, {PUBLISHED_HEADER: PUBLISHED_YES if published else ""})
+    load_data.clear()
+    return ok
+
+
 def download_file_bytes(file_id: str) -> bytes:
     """ดาวน์โหลดไฟล์รูปจาก Drive มาเป็น bytes (ใช้ตอนทำไฟล์ ZIP)"""
     service = get_drive_service()
@@ -480,9 +505,12 @@ STATUS_HEADER = "สถานะ"                             # คอลัม�
 DELETED_AT_HEADER = "วันที่ลบ"                       # คอลัมน์ที่ 12 — เวลาที่ย้ายเข้าถังขยะ
 DELETED_BY_HEADER = "ลบโดย"                          # คอลัมน์ที่ 13 — ใครเป็นคนลบ
 TRASH_STATUS = "ถังขยะ"                             # ค่าในคอลัมน์สถานะเมื่อรูปอยู่ในถังขยะ
+PUBLISHED_HEADER = "เผยแพร่"                         # คอลัมน์ที่ 14 — ""(ไม่เผยแพร่) / "ใช่"
+PUBLISHED_YES = "ใช่"                               # รูปกิจกรรมใบนี้ไปโผล่ในคลังทั่วไปด้วย
 # คอลัมน์ที่เพิ่มต่อท้าย sheet1 (นอกเหนือจาก 8 คอลัมน์เดิม) — เรียงตามลำดับที่ ensure_schema เติม
 _EXTRA_SHEET1_COLS = [
     ACTIVITY_ID_HEADER, PHASH_HEADER, STATUS_HEADER, DELETED_AT_HEADER, DELETED_BY_HEADER,
+    PUBLISHED_HEADER,
 ]
 
 LOG_TAB = "Log"                                    # แท็บบันทึกการกระทำ (audit log)

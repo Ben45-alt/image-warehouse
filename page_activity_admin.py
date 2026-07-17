@@ -23,6 +23,7 @@ from google_utils import (
     get_image_bytes, extract_file_id, trash_photo, restore_photo, log_action, is_activity_open,
     get_activity_visibility, set_activity_visibility, activity_shares, add_share, delete_share,
     VIS_PUBLIC, VIS_PRIVATE, group_duplicates,
+    set_photo_published, PUBLISHED_HEADER, PUBLISHED_YES,
 )
 from page_gallery import build_zip, COLS_PER_ROW
 from qr_utils import qr_png
@@ -247,6 +248,8 @@ def _render_gallery(username):
                 download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
                 st.link_button("⬇️ ดาวน์โหลด", download_url, width="stretch")
 
+                render_publish_toggle(item, "adm", username, "admin")
+
                 # ลบรูป → ย้ายไปถังขยะ (กู้คืนได้ ~30 วัน) มีขั้นยืนยัน
                 del_key = f"adm_confirm_del_{file_id}"
                 if st.session_state.get(del_key):
@@ -439,6 +442,31 @@ def render_share_panel(activity_id, activity_name, key_prefix):
                               width="stretch"):
                     delete_share(activity_id, name)
                     st.rerun()
+
+
+def render_publish_toggle(item, key_prefix, who, role):
+    """
+    ปุ่มเผยแพร่รูป 1 ใบเข้า "คลังทั่วไป" (ใช้ร่วมกัน admin/superuser)
+    เผยแพร่แล้วรูปจะไปโผล่เป็นโฟลเดอร์ของกิจกรรมในหน้าคลังภาพ (คนที่มีรหัสคลังทั่วไปดู/โหลดได้
+    แต่ลบไม่ได้) — รูปยังอยู่ในอัลบั้มกิจกรรมตามเดิม ยกเลิกเมื่อไหร่ก็หายจากคลังทั่วไปทันที
+    """
+    link = item["ลิงก์รูป"]
+    file_id = extract_file_id(link)
+    aid = str(item.get("activity_id", ""))
+    published = str(item.get(PUBLISHED_HEADER, "")).strip() == PUBLISHED_YES
+
+    label = "🌐 ยกเลิกเผยแพร่" if published else "🌐 เผยแพร่เข้าคลังทั่วไป"
+    if st.button(label, key=f"{key_prefix}_pub_{file_id}", width="stretch"):
+        try:
+            set_photo_published(link, not published)
+            log_action(who, role, "ยกเลิกเผยแพร่รูป" if published else "เผยแพร่รูป",
+                       detail=str(item.get("ชื่อไฟล์", "")), activity_id=aid)
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"ทำรายการไม่สำเร็จ: {e}")
+    if published:
+        st.caption("🌐 เผยแพร่อยู่ในคลังทั่วไป")
 
 
 def render_duplicate_scan(df, key_prefix, deleted_by, role):

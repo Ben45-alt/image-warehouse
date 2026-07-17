@@ -31,6 +31,7 @@ from page_gallery import build_zip, COLS_PER_ROW
 # reuse จากหน้า admin: สร้างกิจกรรม (กันรหัสซ้ำ/สุ่มรหัส) + กล่องแชร์อัลบั้ม จะได้ไม่เขียนซ้ำ
 from page_activity_admin import (
     _create_activity, render_share_panel, render_duplicate_scan, render_code_with_qr,
+    render_publish_toggle,
 )
 
 import page_upload
@@ -315,6 +316,8 @@ def _render_all_gallery():
                 )
                 download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
                 st.link_button("⬇️ ดาวน์โหลด", download_url, width="stretch")
+
+                render_publish_toggle(item, "su", su, "superuser")
 
                 # ลบรูป → ย้ายไปถังขยะ (กู้คืนได้ ~30 วัน) มีขั้นยืนยัน
                 del_key = f"su_confirm_del_{file_id}"
