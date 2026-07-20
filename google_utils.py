@@ -531,7 +531,11 @@ ACTIVITIES_HEADER = [
     VISIBILITY_HEADER,
 ]
 EMAIL_HEADER = "อีเมล"                              # คอลัมน์ที่ 6 ในแท็บ Users (เพิ่มตอนทำ "สมัครเอง")
-USERS_HEADER = ["username", "password_hash", "ชื่อ-นามสกุล", "role", "สถานะ", EMAIL_HEADER]
+RESET_REQ_HEADER = "ขอรีเซ็ต"                        # คอลัมน์ที่ 7 — ""(ไม่ได้ขอ) / วันเวลาที่กดลืมรหัส
+USERS_HEADER = ["username", "password_hash", "ชื่อ-นามสกุล", "role", "สถานะ", EMAIL_HEADER,
+                RESET_REQ_HEADER]
+# คอลัมน์ที่เพิ่มทีหลังในแท็บ Users — ต่อท้ายเสมอ (คอลัมน์ 1-5 เดิมห้ามขยับ)
+_EXTRA_USERS_COLS = [EMAIL_HEADER, RESET_REQ_HEADER]
 # ค่าในคอลัมน์ "สถานะ" ของแท็บ Users — login ได้เฉพาะ USER_ACTIVE เท่านั้น
 USER_ACTIVE = "ใช้งาน"
 USER_DISABLED = "ปิด"
@@ -576,12 +580,14 @@ def ensure_schema():
     ahead = aws.row_values(1)
     if VISIBILITY_HEADER not in ahead:
         aws.update_cell(1, len(ahead) + 1, VISIBILITY_HEADER)
-    # แท็บ Users: สร้างถ้ายังไม่มี + เพิ่มคอลัมน์ "อีเมล" ให้ชีตเก่าที่ยังไม่มี
+    # แท็บ Users: สร้างถ้ายังไม่มี + เติมคอลัมน์ที่เพิ่มทีหลังต่อท้ายทีละอัน (idempotent)
     # (ต่อท้ายเสมอ — คอลัมน์ 1-5 เดิมห้ามขยับ เพราะ add_user/set_user_status อ้างตำแหน่ง)
     uws = _ensure_tab(ss, USERS_TAB, USERS_HEADER)
     uhead = uws.row_values(1)
-    if EMAIL_HEADER not in uhead:
-        uws.update_cell(1, len(uhead) + 1, EMAIL_HEADER)
+    for col in _EXTRA_USERS_COLS:
+        if col not in uhead:
+            uws.update_cell(1, len(uhead) + 1, col)
+            uhead.append(col)
     _ensure_tab(ss, LOG_TAB, LOG_HEADER)
     _ensure_tab(ss, SHARES_TAB, SHARES_HEADER)
 
@@ -783,6 +789,57 @@ def delete_user(username):
     if row and row > 1:  # กันเผลอลบแถวหัวตาราง (แถว 1)
         _retry(lambda: ws.delete_rows(row))
         load_users.clear()
+
+
+def _users_col(header_name: str) -> int:
+    """
+    เลขคอลัมน์ (1-based) ของหัวตารางในแท็บ Users — อ่านจากหัวตารางจริงในชีต
+    ไม่ hardcode เพราะคอลัมน์ใหม่ถูกเติมต่อท้ายตามลำดับที่ ensure_schema เจอ
+    คืน 0 ถ้าไม่มีคอลัมน์นั้น (ชีตยังไม่ได้ migrate)
+    """
+    head = get_users_ws().row_values(1)
+    return head.index(header_name) + 1 if header_name in head else 0
+
+
+def request_password_reset(username) -> bool:
+    """
+    ผู้ใช้กด "ลืมรหัสผ่าน" — ทำเครื่องหมายว่าขอรีเซ็ต (superuser จะเห็นในคิว)
+    ไม่แตะรหัสเดิม: ถ้านึกรหัสออกทีหลังก็ยัง login ได้ตามปกติ
+    คืน False ถ้าไม่มี username นี้ (ฝั่งเรียกใช้ยังขึ้นข้อความเหมือนกัน กันเดาว่ามีใครอยู่บ้าง)
+    """
+    ws = get_users_ws()
+    row = _find_row(ws, username, 1)
+    col = _users_col(RESET_REQ_HEADER)
+    if not row or row <= 1 or not col:
+        return False
+    _retry(lambda: ws.update_cell(row, col, _now_str()))
+    load_users.clear()
+    return True
+
+
+def set_user_password(username, password_hash) -> bool:
+    """
+    ตั้งรหัสใหม่ให้บัญชี (superuser รีเซ็ตให้ หรือเจ้าตัวเปลี่ยนเอง)
+    พร้อมล้างธง "ขอรีเซ็ต" ทิ้ง — คำขอถือว่าจัดการแล้ว
+    """
+    ws = get_users_ws()
+    row = _find_row(ws, username, 1)
+    if not row or row <= 1:
+        return False
+    _retry(lambda: ws.update_cell(row, 2, password_hash))       # คอลัมน์ 2 = password_hash (ตำแหน่งเดิม)
+    col = _users_col(RESET_REQ_HEADER)
+    if col:
+        _retry(lambda: ws.update_cell(row, col, ""))
+    load_users.clear()
+    return True
+
+
+def reset_requests() -> pd.DataFrame:
+    """บัญชีที่กด "ลืมรหัสผ่าน" ไว้ รอ superuser ตั้งรหัสใหม่ให้"""
+    df = load_users()
+    if df.empty or RESET_REQ_HEADER not in df.columns:
+        return pd.DataFrame()
+    return df[df[RESET_REQ_HEADER].astype(str).str.strip() != ""].copy()
 
 
 def find_user(username):

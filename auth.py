@@ -228,6 +228,57 @@ def _login_staff():
     st.error("❌ ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
 
 
+def _forgot_password():
+    """
+    "ลืมรหัสผ่าน" — ส่งคำขอเข้าคิวให้ผู้ดูแลระบบตั้งรหัสใหม่ให้
+    ไม่แตะรหัสเดิม (ถ้านึกออกทีหลังก็ยัง login ได้) และ
+    ขึ้นข้อความเดียวกันเสมอไม่ว่าจะมี username นี้จริงไหม — กันคนไล่เดาว่ามีใครอยู่ในระบบบ้าง
+    """
+    import google_utils as gu
+    st.caption("ระบบจะแจ้งผู้ดูแลให้ตั้งรหัสใหม่ให้ แล้วแจ้งคุณโดยตรง")
+    with st.form("forgot_pw", clear_on_submit=True):
+        u = st.text_input("username ของคุณ")
+        ok = st.form_submit_button("ส่งคำขอรีเซ็ตรหัส", width="stretch")
+    if not ok:
+        return
+    if not u.strip():
+        st.error("⚠️ กรอก username ก่อน")
+        return
+    try:
+        if gu.request_password_reset(u.strip()):
+            gu.log_action(u.strip(), "admin", "ขอรีเซ็ตรหัส", "")
+    except Exception:
+        pass
+    st.success("✅ ส่งคำขอแล้ว — ติดต่อผู้ดูแลระบบเพื่อรับรหัสใหม่ได้เลย")
+
+
+def render_change_password_box():
+    """กล่อง "เปลี่ยนรหัสผ่าน" ของเจ้าตัว (ใส่รหัสเดิมก่อน) — ใช้ในหน้า admin"""
+    import google_utils as gu
+    me = st.session_state.get("identity", {}).get("username", "")
+    with st.expander("🔑 เปลี่ยนรหัสผ่านของฉัน"):
+        with st.form("change_pw", clear_on_submit=True):
+            old = st.text_input("รหัสผ่านเดิม", type="password")
+            p1 = st.text_input("รหัสผ่านใหม่", type="password")
+            p2 = st.text_input("ยืนยันรหัสผ่านใหม่", type="password")
+            ok = st.form_submit_button("เปลี่ยนรหัสผ่าน", width="stretch")
+        if not ok:
+            return
+        acct = gu.find_user(me)
+        if not acct or not verify_secret(old, acct.get("password_hash")):
+            st.error("❌ รหัสผ่านเดิมไม่ถูกต้อง")
+            return
+        if p1 != p2:
+            st.error("⚠️ รหัสผ่านใหม่ 2 ช่องไม่ตรงกัน")
+            return
+        if len(p1) < 6:
+            st.error("⚠️ รหัสผ่านต้องยาวอย่างน้อย 6 ตัว")
+            return
+        gu.set_user_password(me, hash_secret(p1))
+        gu.log_action(me, "admin", "เปลี่ยนรหัสผ่านเอง", "")
+        st.success("✅ เปลี่ยนรหัสผ่านแล้ว — ครั้งหน้าใช้รหัสใหม่")
+
+
 def _signup_admin():
     """
     สมัครบัญชี admin เอง — บันทึกเป็นสถานะ "รออนุมัติ" ยัง login ไม่ได้
@@ -410,11 +461,14 @@ def render_landing():
 
     # admin / ผู้ดูแลระบบ — พับไว้ เพราะคนส่วนใหญ่ไม่ได้ใช้ทางนี้
     with st.expander("🔐 สำหรับ admin / ผู้ดูแลระบบ"):
-        tab_in, tab_up = st.tabs(["เข้าสู่ระบบ", "สมัครบัญชี admin"])
+        tab_in, tab_up, tab_forgot = st.tabs(
+            ["เข้าสู่ระบบ", "สมัครบัญชี admin", "ลืมรหัสผ่าน"])
         with tab_in:
             _login_staff()
         with tab_up:
             _signup_admin()
+        with tab_forgot:
+            _forgot_password()
 
 
 def restore_session():

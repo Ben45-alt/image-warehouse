@@ -75,6 +75,9 @@ def render():
 def _render_activities(username):
     st.subheader("🎯 กิจกรรมของฉัน")
 
+    # เปลี่ยนรหัสผ่านของตัวเอง — พับไว้ ไม่เกะกะ (ไม่บังคับ อยากเปลี่ยนค่อยกด)
+    auth.render_change_password_box()
+
     # กล่องโชว์รหัสกิจกรรมที่เพิ่งสร้าง (ให้ก๊อปไปแจกลูกน้อง)
     last = st.session_state.get("admin_last_code")
     if last:

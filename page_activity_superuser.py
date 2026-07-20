@@ -23,7 +23,8 @@ import auth
 from google_utils import (
     load_activities, load_users, load_data, load_active_data, load_trash_data, load_log,
     add_user, set_user_status, delete_user, find_user, pending_users,
-    EMAIL_HEADER, USER_ACTIVE,
+    reset_requests, set_user_password,
+    EMAIL_HEADER, RESET_REQ_HEADER, USER_ACTIVE,
     set_activity_status, delete_activity, is_activity_open,
     get_storage_quota, get_image_bytes, extract_file_id,
     delete_photo, trash_photo, restore_photo, log_action,
@@ -423,6 +424,7 @@ def _render_admin_accounts():
     st.subheader("👥 จัดการบัญชี admin")
 
     _render_pending_approvals()
+    _render_reset_requests()
 
     # ---- ฟอร์มสร้างบัญชีใหม่ ----
     with st.expander("➕ สร้างบัญชี admin ใหม่ (ตั้งรหัสให้เลย)", expanded=False):
@@ -483,6 +485,10 @@ def _render_admin_accounts():
                 st.session_state[del_key] = True
                 st.rerun()
 
+        # ตั้งรหัสใหม่ให้ได้ตลอด ไม่ต้องรอเขากดปุ่มลืมรหัส (เผื่อโทรมาบอก/เดินมาบอก)
+        with st.expander(f"🔑 ตั้งรหัสใหม่ให้ {uname}"):
+            _reset_password_form(uname, "list")
+
 
 def _render_pending_approvals():
     """
@@ -527,6 +533,39 @@ def _render_pending_approvals():
             if c3.button("🚫 ปฏิเสธ", key=f"su_reject_{uname}", width="stretch"):
                 st.session_state[rej_key] = True
                 st.rerun()
+    st.divider()
+
+
+def _reset_password_form(username, key_prefix):
+    """ช่องตั้งรหัสใหม่ให้บัญชีหนึ่ง — พิมพ์รหัสที่เจ้าตัวจำได้อยู่แล้ว (เช่นรหัสเข้าเครื่อง) ได้เลย"""
+    su = st.session_state.get("identity", {}).get("username", "superuser")
+    with st.form(f"{key_prefix}_reset_{username}", clear_on_submit=True):
+        pw = st.text_input(f"รหัสใหม่ของ {username}", type="password",
+                           help="ใส่รหัสที่เจ้าตัวจำได้อยู่แล้วก็ได้ เช่นรหัสเข้าเครื่องของแผนก")
+        ok = st.form_submit_button("🔑 ตั้งรหัสนี้ให้เลย", width="stretch")
+    if not ok:
+        return
+    if len(pw) < 4:
+        st.error("⚠️ รหัสสั้นเกินไป (อย่างน้อย 4 ตัว)")
+        return
+    if set_user_password(username, auth.hash_secret(pw)):
+        log_action(su, "superuser", "ตั้งรหัสใหม่ให้ admin", username)
+        st.success(f"✅ ตั้งรหัสใหม่ให้ “{username}” แล้ว — บอกเจ้าตัวได้เลย")
+        st.rerun()
+    else:
+        st.error("❌ ไม่พบบัญชีนี้")
+
+
+def _render_reset_requests():
+    """คิว "ลืมรหัสผ่าน" — ใครกดขอมาบ้าง ตั้งรหัสใหม่ให้ได้ตรงนี้เลย"""
+    reqs = reset_requests()
+    if reqs.empty:
+        return
+    st.error(f"🔑 มี {len(reqs)} คนลืมรหัส รอคุณตั้งรหัสใหม่ให้")
+    for _, u in reqs.iterrows():
+        uname = str(u["username"])
+        st.markdown(f"**{uname}** · {u.get('ชื่อ-นามสกุล','')} · ขอเมื่อ {u.get(RESET_REQ_HEADER,'')}")
+        _reset_password_form(uname, "queue")
     st.divider()
 
 
