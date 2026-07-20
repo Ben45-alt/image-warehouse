@@ -530,7 +530,12 @@ ACTIVITIES_HEADER = [
     "activity_id", "ชื่อกิจกรรม", "รหัสเข้า_hash", "คนสร้าง", "วันที่สร้าง", "สถานะ",
     VISIBILITY_HEADER,
 ]
-USERS_HEADER = ["username", "password_hash", "ชื่อ-นามสกุล", "role", "สถานะ"]
+EMAIL_HEADER = "อีเมล"                              # คอลัมน์ที่ 6 ในแท็บ Users (เพิ่มตอนทำ "สมัครเอง")
+USERS_HEADER = ["username", "password_hash", "ชื่อ-นามสกุล", "role", "สถานะ", EMAIL_HEADER]
+# ค่าในคอลัมน์ "สถานะ" ของแท็บ Users — login ได้เฉพาะ USER_ACTIVE เท่านั้น
+USER_ACTIVE = "ใช้งาน"
+USER_DISABLED = "ปิด"
+USER_PENDING = "รออนุมัติ"                          # สมัครเองแล้ว รอ superuser กดอนุมัติ
 
 
 @st.cache_resource
@@ -571,7 +576,12 @@ def ensure_schema():
     ahead = aws.row_values(1)
     if VISIBILITY_HEADER not in ahead:
         aws.update_cell(1, len(ahead) + 1, VISIBILITY_HEADER)
-    _ensure_tab(ss, USERS_TAB, USERS_HEADER)
+    # แท็บ Users: สร้างถ้ายังไม่มี + เพิ่มคอลัมน์ "อีเมล" ให้ชีตเก่าที่ยังไม่มี
+    # (ต่อท้ายเสมอ — คอลัมน์ 1-5 เดิมห้ามขยับ เพราะ add_user/set_user_status อ้างตำแหน่ง)
+    uws = _ensure_tab(ss, USERS_TAB, USERS_HEADER)
+    uhead = uws.row_values(1)
+    if EMAIL_HEADER not in uhead:
+        uws.update_cell(1, len(uhead) + 1, EMAIL_HEADER)
     _ensure_tab(ss, LOG_TAB, LOG_HEADER)
     _ensure_tab(ss, SHARES_TAB, SHARES_HEADER)
 
@@ -736,14 +746,25 @@ def load_users() -> pd.DataFrame:
     return pd.DataFrame(get_users_ws().get_all_records())
 
 
-def add_user(username, password_hash, fullname, role="admin", status="ใช้งาน"):
-    """เพิ่มบัญชี admin (รหัสเก็บเป็น hash แล้ว)"""
+def add_user(username, password_hash, fullname, role="admin", status=USER_ACTIVE, email=""):
+    """
+    เพิ่มบัญชี admin (รหัสเก็บเป็น hash แล้ว)
+    status=USER_PENDING = คนสมัครเอง ยัง login ไม่ได้จนกว่า superuser จะกดอนุมัติ
+    """
     ws = get_users_ws()
     _retry(lambda: ws.append_row(
-        [username, password_hash, fullname, role, status],
+        [username, password_hash, fullname, role, status, email],
         value_input_option="USER_ENTERED",
     ))
     load_users.clear()  # ล้าง cache เพื่อให้บัญชีใหม่ขึ้นทันที
+
+
+def pending_users() -> pd.DataFrame:
+    """บัญชีที่สมัครเองแล้วยังรออนุมัติ (ไว้โชว์ในหน้า superuser)"""
+    df = load_users()
+    if df.empty or "สถานะ" not in df.columns:
+        return pd.DataFrame()
+    return df[df["สถานะ"].astype(str).str.strip() == USER_PENDING].copy()
 
 
 def set_user_status(username, status):
@@ -771,6 +792,15 @@ def find_user(username):
         return None
     m = df[df["username"].astype(str) == str(username)]
     return m.iloc[0].to_dict() if not m.empty else None
+
+
+def email_taken(email: str) -> bool:
+    """อีเมลนี้ถูกใช้สมัครไปแล้วหรือยัง (เทียบแบบไม่สนตัวพิมพ์ใหญ่เล็ก) — กันสมัครซ้ำคนเดียวหลายบัญชี"""
+    df = load_users()
+    if df.empty or EMAIL_HEADER not in df.columns:
+        return False
+    e = str(email).strip().lower()
+    return bool((df[EMAIL_HEADER].astype(str).str.strip().str.lower() == e).any())
 
 
 # ---------- โควตา Google Drive (ใช้ในหน้า Dashboard superuser) ----------

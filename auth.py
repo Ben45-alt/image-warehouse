@@ -210,12 +210,15 @@ def _login_staff():
 
     # 2) เช็ค admin จากแท็บ Users (รหัสเก็บเป็น hash)
     acct = gu.find_user(username)
-    if (
-        acct
-        and str(acct.get("สถานะ")) == "ใช้งาน"
-        and str(acct.get("role")) == "admin"
-        and verify_secret(p, acct.get("password_hash"))
-    ):
+    if acct and str(acct.get("role")) == "admin" and verify_secret(p, acct.get("password_hash")):
+        # รหัสถูกแล้ว — ค่อยบอกสถานะบัญชีได้ (ถ้าบอกก่อนเช็ครหัส = เผยว่ามี username นี้อยู่จริง)
+        status = str(acct.get("สถานะ", "")).strip()
+        if status == gu.USER_PENDING:
+            st.info("⏳ บัญชีนี้สมัครไว้แล้ว **รอหัวหน้าอนุมัติ** — ติดต่อผู้ดูแลระบบให้กดอนุมัติให้ก่อน")
+            return
+        if status != gu.USER_ACTIVE:
+            st.error("🚫 บัญชีนี้ถูกระงับการใช้งาน — ติดต่อผู้ดูแลระบบ")
+            return
         _do_login("admin", {
             "username": username,
             "fullname": acct.get("ชื่อ-นามสกุล", ""),
@@ -223,6 +226,58 @@ def _login_staff():
         return
 
     st.error("❌ ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
+
+
+def _signup_admin():
+    """
+    สมัครบัญชี admin เอง — บันทึกเป็นสถานะ "รออนุมัติ" ยัง login ไม่ได้
+    จนกว่า superuser จะกดอนุมัติในหน้า "จัดการบัญชี admin"
+
+    ⚠️ อีเมลที่กรอกเอง "ไม่ได้พิสูจน์" ว่าเป็นเจ้าของอีเมลจริง (ไม่ได้ส่งเมลยืนยัน)
+    ความปลอดภัยมาจากขั้นที่หัวหน้าดูรายชื่อแล้วกดอนุมัติเฉพาะคนที่รู้จัก
+    """
+    import google_utils as gu
+    import config
+
+    domain = str(getattr(config, "COMPANY_EMAIL_DOMAIN", "") or "").strip()
+    st.caption(
+        "กรอกข้อมูลแล้วรอหัวหน้ากดอนุมัติ จึงจะเข้าใช้งานได้"
+        + (f" · ต้องใช้อีเมลบริษัท ({domain})" if domain else "")
+    )
+    with st.form("signup_admin", clear_on_submit=False):
+        u = st.text_input("username ที่อยากใช้ (ภาษาอังกฤษ/ตัวเลข)")
+        fullname = st.text_input("ชื่อ-นามสกุล")
+        email = st.text_input("อีเมลบริษัท", placeholder=f"yourname{domain or '@company.com'}")
+        p1 = st.text_input("ตั้งรหัสผ่าน", type="password")
+        p2 = st.text_input("ยืนยันรหัสผ่านอีกครั้ง", type="password")
+        ok = st.form_submit_button("ส่งคำขอสมัคร", width="stretch")
+    if not ok:
+        return
+
+    username, fullname, email = u.strip(), fullname.strip(), email.strip()
+    if not username or not fullname or not email or not p1:
+        st.error("⚠️ กรอกให้ครบทุกช่อง")
+        return
+    if p1 != p2:
+        st.error("⚠️ รหัสผ่าน 2 ช่องไม่ตรงกัน")
+        return
+    if len(p1) < 6:
+        st.error("⚠️ รหัสผ่านต้องยาวอย่างน้อย 6 ตัว")
+        return
+    if domain and not email.lower().endswith(domain.lower()):
+        st.error(f"⚠️ ต้องใช้อีเมลบริษัทที่ลงท้ายด้วย {domain} เท่านั้น")
+        return
+    if gu.find_user(username):
+        st.error(f"❌ username “{username}” มีคนใช้แล้ว — เปลี่ยนชื่ออื่น")
+        return
+    if gu.email_taken(email):
+        st.error("❌ อีเมลนี้เคยสมัครไว้แล้ว — ถ้าลืมรหัส ให้ติดต่อผู้ดูแลระบบ")
+        return
+
+    gu.add_user(username, hash_secret(p1), fullname,
+                role="admin", status=gu.USER_PENDING, email=email)
+    gu.log_action(username, "guest", "สมัครบัญชี admin", f"{fullname} · {email}")
+    st.success("✅ ส่งคำขอแล้ว — รอหัวหน้าอนุมัติ แล้วค่อยกลับมา login ด้วย username/รหัสที่ตั้งไว้")
 
 
 def find_share_by_code(code_plain: str):
@@ -353,7 +408,11 @@ def render_landing():
 
     # admin / ผู้ดูแลระบบ — พับไว้ เพราะคนส่วนใหญ่ไม่ได้ใช้ทางนี้
     with st.expander("🔐 สำหรับ admin / ผู้ดูแลระบบ"):
-        _login_staff()
+        tab_in, tab_up = st.tabs(["เข้าสู่ระบบ", "สมัครบัญชี admin"])
+        with tab_in:
+            _login_staff()
+        with tab_up:
+            _signup_admin()
 
 
 def restore_session():
@@ -389,8 +448,8 @@ def restore_session():
     elif role == "admin":
         import google_utils as gu
         acct = gu.find_user(str(ident.get("username", "")))
-        if not (acct and str(acct.get("สถานะ")) == "ใช้งาน" and str(acct.get("role")) == "admin"):
-            return                                   # บัญชีถูกปิด/ลบ/ลดสิทธิ์แล้ว
+        if not (acct and str(acct.get("สถานะ")) == gu.USER_ACTIVE and str(acct.get("role")) == "admin"):
+            return                                   # บัญชีถูกปิด/ลบ/ลดสิทธิ์/ยังรออนุมัติ
 
     elif role == "superuser":
         if str(ident.get("username", "")) != str(st.secrets.get("SUPERUSER_USER", "")):

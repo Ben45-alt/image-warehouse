@@ -22,7 +22,8 @@ import pandas as pd
 import auth
 from google_utils import (
     load_activities, load_users, load_data, load_active_data, load_trash_data, load_log,
-    add_user, set_user_status, delete_user, find_user,
+    add_user, set_user_status, delete_user, find_user, pending_users,
+    EMAIL_HEADER, USER_ACTIVE,
     set_activity_status, delete_activity, is_activity_open,
     get_storage_quota, get_image_bytes, extract_file_id,
     delete_photo, trash_photo, restore_photo, log_action,
@@ -421,8 +422,10 @@ def _render_trash():
 def _render_admin_accounts():
     st.subheader("👥 จัดการบัญชี admin")
 
+    _render_pending_approvals()
+
     # ---- ฟอร์มสร้างบัญชีใหม่ ----
-    with st.expander("➕ สร้างบัญชี admin ใหม่", expanded=True):
+    with st.expander("➕ สร้างบัญชี admin ใหม่ (ตั้งรหัสให้เลย)", expanded=False):
         with st.form("create_admin", clear_on_submit=True):
             username = st.text_input("username (ชื่อผู้ใช้ login)")
             fullname = st.text_input("ชื่อ-นามสกุล")
@@ -444,9 +447,11 @@ def _render_admin_accounts():
         uname = str(u["username"])
         status = str(u.get("สถานะ", ""))
         c1, c2, c3 = st.columns([5, 2, 2])
+        email = str(u.get(EMAIL_HEADER, "") or "")
         c1.markdown(
             f"**{uname}** · {u.get('ชื่อ-นามสกุล','')}  \n"
             f"role: {u.get('role','admin')} · สถานะ: {status}"
+            + (f" · 📧 {email}" if email else "")
         )
         # ปุ่มเปิด/ปิด (พักการใช้งานชั่วคราว — ข้อมูลยังอยู่)
         if status == "ใช้งาน":
@@ -477,6 +482,52 @@ def _render_admin_accounts():
             if c3.button("🗑️ ลบบัญชี", key=f"su_deluser_{uname}", width="stretch"):
                 st.session_state[del_key] = True
                 st.rerun()
+
+
+def _render_pending_approvals():
+    """
+    รายการคนที่สมัคร admin เองแล้ว "รออนุมัติ" — อนุมัติ (เปิดใช้งาน) หรือ ปฏิเสธ (ลบทิ้ง)
+
+    ⚠️ อีเมลในรายการนี้ ระบบ "ไม่ได้ยืนยัน" ว่าเป็นเจ้าของจริง (ไม่ได้ส่งเมลไปเช็ค)
+    → อนุมัติเฉพาะคนที่รู้จักตัวจริงเท่านั้น
+    """
+    pend = pending_users()
+    if pend.empty:
+        return
+
+    su = st.session_state.get("identity", {}).get("username", "superuser")
+    st.warning(f"⏳ มี {len(pend)} คนสมัครเข้ามา รอคุณอนุมัติ")
+    st.caption("อนุมัติเฉพาะคนที่คุณรู้จักตัวจริง — ระบบไม่ได้ส่งเมลยืนยันเจ้าของอีเมล")
+    for _, u in pend.iterrows():
+        uname = str(u["username"])
+        c1, c2, c3 = st.columns([5, 2, 2])
+        c1.markdown(
+            f"**{uname}** · {u.get('ชื่อ-นามสกุล','')}  \n"
+            f"📧 {u.get(EMAIL_HEADER, '') or '(ไม่ระบุ)'}"
+        )
+        if c2.button("✅ อนุมัติ", key=f"su_approve_{uname}", width="stretch"):
+            set_user_status(uname, USER_ACTIVE)
+            log_action(su, "superuser", "อนุมัติบัญชี admin", uname)
+            st.rerun()
+
+        # ปฏิเสธ = ลบแถวทิ้ง (ยังไม่เคยใช้งาน ไม่มีข้อมูลผูกอยู่) — มีขั้นยืนยันกันกดพลาด
+        rej_key = f"su_confirm_reject_{uname}"
+        if st.session_state.get(rej_key):
+            st.warning(f"⚠️ ปฏิเสธคำขอของ **{uname}**? (ลบทิ้ง เขาสมัครใหม่ได้)")
+            y, no = st.columns(2)
+            if y.button("✅ ปฏิเสธเลย", key=f"su_reject_yes_{uname}", width="stretch"):
+                delete_user(uname)
+                log_action(su, "superuser", "ปฏิเสธคำขอสมัคร admin", uname)
+                st.session_state.pop(rej_key, None)
+                st.rerun()
+            if no.button("❌ ยกเลิก", key=f"su_reject_no_{uname}", width="stretch"):
+                st.session_state.pop(rej_key, None)
+                st.rerun()
+        else:
+            if c3.button("🚫 ปฏิเสธ", key=f"su_reject_{uname}", width="stretch"):
+                st.session_state[rej_key] = True
+                st.rerun()
+    st.divider()
 
 
 def _create_admin(username, fullname, pw):
