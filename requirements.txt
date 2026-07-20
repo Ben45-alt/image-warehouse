@@ -9,4 +9,5 @@ google-api-python-client  # ใช้คุยกับ Google Drive (อัป�
 Pillow                    # ย่อ/บีบอัดรูป
 piexif                    # อ่าน/เขียน EXIF (ฝัง metadata บริบท + เก็บ EXIF กล้องเดิม)
 qrcode                    # สร้าง QR Code ของรหัสกิจกรรม/รหัสดู (ให้สแกนแทนพิมพ์)
+extra-streamlit-components  # เขียน/ลบ cookie (ใช้ทำ "จำฉันไว้ 1 วัน" — ถ้าหายไปแอปยังทำงานปกติ แค่ไม่จำ)
 pandas                    # จัดการตารางข้อมูล + ทำ Dashboard

@@ -13,6 +13,11 @@ import hmac
 
 import streamlit as st
 
+import session_store
+
+# ข้อความบนช่อง "จำฉันไว้..." — อ้างค่าเดียวกับ session_store จะได้แก้ที่เดียวแล้วตรงกันทุกที่
+REMEMBER_LABEL = f"{session_store.REMEMBER_DAYS} วัน"
+
 
 def _get_salt() -> str:
     """อ่าน salt จาก secrets (ถ้าลืมตั้งจะ error ชัดเจน ให้รู้ว่าต้องเพิ่มใน secrets)"""
@@ -65,12 +70,24 @@ def ensure_session():
 
 
 def logout():
-    """ออกจากระบบ — ล้างทุกอย่างกลับไปหน้าแรก"""
+    """ออกจากระบบ — ล้างทุกอย่างกลับไปหน้าแรก + ลืม cookie ที่จำไว้"""
+    session_store.clear()
     st.session_state["view"] = None
     st.session_state["role"] = None
     st.session_state["identity"] = {}
-    for k in ("prefill_actid", "prefill_actcode", "deeplink_error"):
+    for k in ("pending_act", "deeplink_error"):
         st.session_state.pop(k, None)
+    st.rerun()
+
+
+def _do_login(role: str, identity: dict, remember: bool):
+    """ตั้ง session หลัง login ผ่าน + จำลง cookie ถ้าผู้ใช้ติ๊กไว้ (ใช้ร่วมทุกทางเข้า)"""
+    st.session_state["role"] = role
+    st.session_state["identity"] = identity
+    st.session_state["view"] = None
+    st.session_state.pop("pending_act", None)
+    if remember:
+        session_store.save(role, identity)
     st.rerun()
 
 
@@ -100,73 +117,74 @@ def find_open_activity(code_plain: str):
 
 
 # ---------- ฟอร์ม login แต่ละแบบ ----------
-def _login_general():
-    """คลังภาพทั่วไป (ระบบเดิม) — ใช้ APP_PASSWORD"""
-    with st.form("login_general"):
-        pw = st.text_input("รหัสผ่านคลังภาพ", type="password")
-        ok = st.form_submit_button("เข้าสู่ระบบ", width="stretch")
-    if ok:
-        if pw == st.secrets["APP_PASSWORD"]:
-            st.session_state["role"] = "general"
-            st.session_state["view"] = None
-            st.rerun()
-        else:
-            st.error("❌ รหัสผ่านไม่ถูกต้อง")
-
-
-def _login_user():
+def identify_code(code_plain: str):
     """
-    ผู้เข้าร่วมกิจกรรม — เลือกชื่อกิจกรรมที่ 'เปิด' อยู่ (dropdown) + กรอกรหัส + ชื่อ
-    โชว์เฉพาะกิจกรรมที่เปิด ; ต้องกรอกรหัสให้ตรงกับ "กิจกรรมที่เลือก" ถึงจะเข้าได้
-    (รองรับหลายกิจกรรมเปิดพร้อมกัน — เลือกอันที่จะเข้าได้ชัดเจน)
+    หัวใจของ "ช่องเดียวจบ" — เดาให้เองว่ารหัสที่พิมพ์มาเป็นรหัสประเภทไหน
+    คืน (ประเภท, ข้อมูล) โดยไล่เช็คตามลำดับ:
+      1) "general" — รหัสผ่านคลังภาพทั่วไป (APP_PASSWORD)
+      2) "user"    — รหัสกิจกรรมที่เปิดอยู่ → คืน dict ของกิจกรรม
+      3) "viewer"  — รหัสดูอัลบั้มที่ถูกแชร์ → คืน dict ของการแชร์
+      ไม่ตรงเลย → (None, None)
+
+    ทำได้เพราะรหัส 3 แบบนี้เป็นคนละค่ากันอยู่แล้ว ผู้ใช้จึงไม่ต้องรู้ว่าตัวเองเป็นประเภทไหน
     """
-    import google_utils as gu  # lazy import กัน circular import
+    code = str(code_plain).strip()
+    if not code:
+        return None, None
 
-    # เฉพาะกิจกรรมที่ "เปิดอยู่จริง" = สถานะเปิด + ยังไม่หมดอายุ auto-close (7 วันจากวันสร้าง)
-    open_acts = gu.open_activities(gu.load_activities())
-    if open_acts.empty:
-        st.info("ตอนนี้ยังไม่มีกิจกรรมที่เปิดอยู่ — ติดต่อหัวหน้า/ผู้ดูแลให้เปิดกิจกรรมก่อน")
-        return
+    # 1) คลังทั่วไป — ใช้ secrets_equal กัน TypeError ตอนผู้ใช้พิมพ์อักขระไทย (บทเรียนเดิม)
+    try:
+        if secrets_equal(code, st.secrets["APP_PASSWORD"]):
+            return "general", None
+    except Exception:
+        pass
 
-    # ใช้ activity_id เป็น "ค่าจริง" ของ dropdown (ไม่ซ้ำกันแน่นอน กันชื่อกิจกรรมซ้ำ) แต่โชว์เป็นชื่อ
-    ids = list(open_acts["activity_id"].astype(str))
-    id2name = dict(zip(ids, open_acts["ชื่อกิจกรรม"].astype(str)))
-    id2hash = dict(zip(ids, open_acts["รหัสเข้า_hash"].astype(str)))
+    # 2) รหัสกิจกรรมที่ "เปิดอยู่จริง" (สถานะเปิด + ยังไม่หมดอายุ auto-close)
+    act = find_open_activity(code)
+    if act:
+        return "user", act
 
-    # ค่าที่เติมมาจาก QR deep-link (?actcode) — เลือกกิจกรรม + เติมรหัสให้ เหลือแค่กรอกชื่อ
-    prefill_id = st.session_state.get("prefill_actid", "")
-    prefill_code = st.session_state.get("prefill_actcode", "")
-    default_index = ids.index(prefill_id) if prefill_id in ids else 0
-    if prefill_id in ids:
-        st.info("📱 เปิดจาก QR แล้ว — เลือกกิจกรรมและใส่รหัสให้อัตโนมัติ เหลือแค่กรอกชื่อของคุณ")
+    # 3) รหัสดูอัลบั้มส่วนตัว (ยังไม่ถูกถอนสิทธิ์)
+    share = find_share_by_code(code)
+    if share:
+        return "viewer", share
 
-    with st.form("login_user"):
-        sel_id = st.selectbox("เลือกกิจกรรม", ids, index=default_index,
-                              format_func=lambda i: id2name.get(i, i))
-        code = st.text_input("รหัสกิจกรรม", value=prefill_code)
-        name = st.text_input("ชื่อของคุณ")
+    return None, None
+
+
+def _activity_name_of(activity_id: str) -> str:
+    """หาชื่อกิจกรรมจาก activity_id (ไว้โชว์ให้ผู้ใช้เห็นว่ากำลังเข้าอันไหน)"""
+    import google_utils as gu
+    acts = gu.load_activities()
+    if acts.empty or "activity_id" not in acts.columns:
+        return ""
+    m = acts[acts["activity_id"].astype(str) == str(activity_id)]
+    return str(m.iloc[0]["ชื่อกิจกรรม"]) if not m.empty else ""
+
+
+def _render_name_step():
+    """
+    ขั้นที่ 2 ของผู้ส่งรูปกิจกรรม — รหัสถูกแล้ว เหลือถามว่า "คุณชื่ออะไร"
+    จำเป็นต้องถาม เพราะต้องบันทึกว่าใครเป็นคนส่งรูป (และใช้กรองแท็บ "รูปของฉัน")
+    """
+    pend = st.session_state["pending_act"]
+    st.success(f"✅ รหัสถูกต้อง — กิจกรรม: **{pend['activity_name']}**")
+    with st.form("login_user_name"):
+        name = st.text_input("ชื่อของคุณ (ให้รู้ว่าใครส่งรูป)")
         ok = st.form_submit_button("เข้าร่วมกิจกรรม", width="stretch")
+    if st.button("← เปลี่ยนรหัส", key="back_from_name"):
+        st.session_state.pop("pending_act", None)
+        st.rerun()
     if not ok:
         return
-
-    if not code.strip() or not name.strip():
-        st.error("⚠️ กรอกรหัสกิจกรรมและชื่อให้ครบ")
+    if not name.strip():
+        st.error("⚠️ กรอกชื่อของคุณก่อน")
         return
-    # รหัสต้องตรงกับ "กิจกรรมที่เลือก" เท่านั้น (กันกรอกรหัสกิจกรรมอื่นแล้วหลุดเข้าผิดอัน)
-    if not verify_secret(code.strip(), id2hash.get(sel_id)):
-        st.error("❌ รหัสไม่ตรงกับกิจกรรมที่เลือก")
-        return
-
-    st.session_state["role"] = "user"
-    st.session_state["identity"] = {
+    _do_login("user", {
         "name": name.strip(),
-        "activity_id": sel_id,
-        "activity_name": id2name.get(sel_id, ""),
-    }
-    st.session_state["view"] = None
-    st.session_state.pop("prefill_actid", None)
-    st.session_state.pop("prefill_actcode", None)
-    st.rerun()
+        "activity_id": pend["activity_id"],
+        "activity_name": pend["activity_name"],
+    }, pend.get("remember", True))
 
 
 def _login_staff():
@@ -175,6 +193,8 @@ def _login_staff():
     with st.form("login_staff"):
         u = st.text_input("ชื่อผู้ใช้ (username)")
         p = st.text_input("รหัสผ่าน", type="password")
+        remember = st.checkbox(f"จำฉันไว้ {REMEMBER_LABEL} ในเครื่องนี้", value=False,
+                               help="อย่าติ๊กถ้าใช้เครื่องกลาง/เครื่องที่คนอื่นใช้ด้วย")
         ok = st.form_submit_button("เข้าสู่ระบบ", width="stretch")
     if not ok:
         return
@@ -185,10 +205,7 @@ def _login_staff():
     su_user = st.secrets.get("SUPERUSER_USER", "")
     su_pass = st.secrets.get("SUPERUSER_PASS", "")
     if username and username == su_user and secrets_equal(p, su_pass):
-        st.session_state["role"] = "superuser"
-        st.session_state["identity"] = {"username": username}
-        st.session_state["view"] = None
-        st.rerun()
+        _do_login("superuser", {"username": username}, remember)
         return
 
     # 2) เช็ค admin จากแท็บ Users (รหัสเก็บเป็น hash)
@@ -199,13 +216,10 @@ def _login_staff():
         and str(acct.get("role")) == "admin"
         and verify_secret(p, acct.get("password_hash"))
     ):
-        st.session_state["role"] = "admin"
-        st.session_state["identity"] = {
+        _do_login("admin", {
             "username": username,
             "fullname": acct.get("ชื่อ-นามสกุล", ""),
-        }
-        st.session_state["view"] = None
-        st.rerun()
+        }, remember)
         return
 
     st.error("❌ ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
@@ -224,70 +238,27 @@ def find_share_by_code(code_plain: str):
     return None
 
 
-def _login_viewer():
-    """
-    ดูอัลบั้มกิจกรรม 2 ทาง:
-      1) อัลบั้มสาธารณะ (visibility=ทุกคน) — กดชื่อเข้าดูได้เลย ไม่ต้องมีรหัส
-      2) รหัสดูส่วนตัว (ถูกแชร์เฉพาะคน) — กรอกรหัส → เข้าอัลบั้มที่ถูกแชร์
-    """
+def _render_public_albums():
+    """ปุ่มอัลบั้มสาธารณะ — กดชื่อเข้าดูได้เลย ไม่ต้องมีรหัส (ของเดิม ย้ายมาไว้ใต้ช่องรหัส)"""
     import google_utils as gu  # lazy import กัน circular import
-
-    # ----- 1) อัลบั้มสาธารณะ -----
-    st.markdown("**อัลบั้มสาธารณะ (ใครก็ดูได้)**")
     pub = gu.public_activities()
     if pub.empty:
-        st.caption("— ยังไม่มีอัลบั้มสาธารณะ —")
-    else:
-        for _, a in pub.iterrows():
-            aid = str(a["activity_id"])
-            nm = str(a["ชื่อกิจกรรม"])
-            if st.button(f"🖼️ {nm}", key=f"pubalbum_{aid}", width="stretch"):
-                st.session_state["role"] = "viewer"
-                st.session_state["identity"] = {
-                    "activity_id": aid, "activity_name": nm, "viewer_name": "(สาธารณะ)",
-                }
-                st.session_state["view"] = None
-                st.rerun()
-
-    st.divider()
-
-    # ----- 2) รหัสดูส่วนตัว -----
-    st.markdown("**มีรหัสดูส่วนตัว? (ถูกแชร์เฉพาะคน)**")
-    with st.form("login_viewer"):
-        code = st.text_input("รหัสดูอัลบั้ม")
-        ok = st.form_submit_button("เปิดดูอัลบั้ม", width="stretch")
-    if not ok:
         return
-    if not code.strip():
-        st.error("⚠️ กรอกรหัสดูก่อน")
-        return
-    share = find_share_by_code(code.strip())
-    if not share:
-        st.error("❌ รหัสไม่ถูกต้อง หรือถูกถอนสิทธิ์แล้ว")
-        return
-
-    aid = str(share.get("activity_id"))
-    # หาชื่อกิจกรรมจาก activity_id
-    acts = gu.load_activities()
-    nm = ""
-    if not acts.empty and "activity_id" in acts.columns:
-        m = acts[acts["activity_id"].astype(str) == aid]
-        if not m.empty:
-            nm = str(m.iloc[0]["ชื่อกิจกรรม"])
-    st.session_state["role"] = "viewer"
-    st.session_state["identity"] = {
-        "activity_id": aid, "activity_name": nm,
-        "viewer_name": str(share.get("ชื่อผู้ดู", "")),
-    }
-    st.session_state["view"] = None
-    st.rerun()
+    st.markdown("**หรือดูอัลบั้มสาธารณะ (ใครก็ดูได้)**")
+    for _, a in pub.iterrows():
+        aid = str(a["activity_id"])
+        nm = str(a["ชื่อกิจกรรม"])
+        if st.button(f"🖼️ {nm}", key=f"pubalbum_{aid}", width="stretch"):
+            _do_login("viewer", {
+                "activity_id": aid, "activity_name": nm, "viewer_name": "(สาธารณะ)",
+            }, remember=False)   # อัลบั้มสาธารณะไม่ต้องจำ เข้าใหม่ก็แค่กดปุ่ม
 
 
 def handle_deeplink():
     """
     อ่าน query param จาก QR deep-link แล้วพาเข้าให้อัตโนมัติ (เรียกตอนเปิดแอป ก่อน render):
       ?viewcode=XXX → เข้าอัลบั้มเลย (role=viewer) ถ้ารหัสถูก
-      ?actcode=XXX  → เปิดหน้าส่งรูป + เลือกกิจกรรม + เติมรหัสให้ (เหลือแค่กรอกชื่อ)
+      ?actcode=XXX  → รหัสถูกแล้ว ข้ามไปขั้นถามชื่อเลย (เหลือกรอกชื่ออย่างเดียว)
     """
     if st.session_state.get("role"):
         return  # login อยู่แล้ว ไม่ต้องจัดการ deep-link ซ้ำ
@@ -298,21 +269,13 @@ def handle_deeplink():
     if not viewcode and not actcode:
         return
 
-    import google_utils as gu  # lazy import กัน circular import
-
     if viewcode:
         share = find_share_by_code(viewcode)
         if share:
             aid = str(share.get("activity_id"))
-            nm = ""
-            acts = gu.load_activities()
-            if not acts.empty and "activity_id" in acts.columns:
-                m = acts[acts["activity_id"].astype(str) == aid]
-                if not m.empty:
-                    nm = str(m.iloc[0]["ชื่อกิจกรรม"])
             st.session_state["role"] = "viewer"
             st.session_state["identity"] = {
-                "activity_id": aid, "activity_name": nm,
+                "activity_id": aid, "activity_name": _activity_name_of(aid),
                 "viewer_name": str(share.get("ชื่อผู้ดู", "")),
             }
             st.session_state["view"] = None
@@ -321,9 +284,12 @@ def handle_deeplink():
     elif actcode:
         act = find_open_activity(actcode)
         if act:
-            st.session_state["view"] = "user"
-            st.session_state["prefill_actid"] = str(act.get("activity_id"))
-            st.session_state["prefill_actcode"] = actcode
+            # รหัสถูกแล้ว → ข้ามช่องรหัสไปขั้นถามชื่อเลย
+            st.session_state["pending_act"] = {
+                "activity_id": str(act.get("activity_id")),
+                "activity_name": str(act.get("ชื่อกิจกรรม", "")),
+                "remember": True,
+            }
         else:
             st.session_state["deeplink_error"] = "❌ รหัสกิจกรรมใน QR ไม่ถูกต้อง หรือกิจกรรมปิดแล้ว"
 
@@ -335,59 +301,104 @@ def handle_deeplink():
 
 
 def render_landing():
-    """หน้าแรก: เลือกประเภทการเข้าใช้ → แสดงฟอร์ม login ที่เลือก"""
-    view = st.session_state.get("view")
-
+    """
+    หน้าแรก — "ช่องเดียวจบ"
+    ผู้ใช้ไม่ต้องเลือกก่อนว่าตัวเองเป็นประเภทไหน แค่ใส่รหัสที่มีอยู่ในมือ
+    ระบบเดาให้เอง (identify_code) แล้วพาไปหน้าที่ตรงกับสิทธิ์
+    """
     # ข้อความ error จาก deep-link (QR รหัสผิด/หมดอายุ)
     err = st.session_state.pop("deeplink_error", None)
     if err:
         st.error(err)
 
-    # ----- ยังไม่เลือก = โชว์ 4 การ์ดให้เลือก -----
-    if view is None:
-        st.title("📷 คลังภาพกลางของบริษัท")
-        st.caption("เลือกประเภทการเข้าใช้งาน")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.markdown("### 📁 คลังทั่วไป")
-            st.write("พนักงานทั่วไป — ส่ง/ค้นหารูปตามแผนก")
-            if st.button("เข้าคลังทั่วไป", width="stretch", key="b_general"):
-                st.session_state["view"] = "general"
-                st.rerun()
-        with c2:
-            st.markdown("### 📤 ส่งรูปกิจกรรม")
-            st.write("มีรหัสกิจกรรม — ถ่าย/ส่งรูป")
-            if st.button("ส่งรูปกิจกรรม", width="stretch", key="b_user"):
-                st.session_state["view"] = "user"
-                st.rerun()
-        with c3:
-            st.markdown("### 🖼️ ดูอัลบั้ม")
-            st.write("ดูรูป (สาธารณะ/ถูกแชร์)")
-            if st.button("ดูอัลบั้มกิจกรรม", width="stretch", key="b_viewer"):
-                st.session_state["view"] = "viewer"
-                st.rerun()
-        with c4:
-            st.markdown("### 🔐 เข้าสู่ระบบ")
-            st.write("admin / ผู้ดูแลระบบ")
-            if st.button("เข้าสู่ระบบ", width="stretch", key="b_staff"):
-                st.session_state["view"] = "staff"
-                st.rerun()
+    st.title("📷 คลังภาพกลางของบริษัท")
+
+    # รหัสกิจกรรมถูกแล้ว → ข้ามมาขั้นถามชื่อ (ไม่ต้องโชว์ช่องรหัสอีก)
+    if st.session_state.get("pending_act"):
+        _render_name_step()
         return
 
-    # ----- เลือกแล้ว = ปุ่มย้อนกลับ + ฟอร์ม login -----
-    if st.button("← กลับหน้าแรก", key="back_landing"):
-        st.session_state["view"] = None
-        st.rerun()
+    st.caption("ใส่รหัสที่คุณได้รับ — ระบบจะพาไปหน้าที่ตรงกับสิทธิ์ของคุณเอง")
 
-    if view == "general":
-        st.subheader("📁 เข้าคลังภาพทั่วไป")
-        _login_general()
-    elif view == "user":
-        st.subheader("📤 ส่งรูปเข้ากิจกรรม")
-        _login_user()
-    elif view == "viewer":
-        st.subheader("🖼️ ดูอัลบั้มกิจกรรม")
-        _login_viewer()
-    elif view == "staff":
-        st.subheader("🔐 เข้าสู่ระบบ (admin / ผู้ดูแล)")
+    with st.form("login_main"):
+        code = st.text_input("รหัสของคุณ", type="password",
+                             placeholder="รหัสคลังภาพ / รหัสกิจกรรม / รหัสดูอัลบั้ม")
+        remember = st.checkbox(f"จำฉันไว้ {REMEMBER_LABEL} ในเครื่องนี้", value=True,
+                               help="อย่าติ๊กถ้าใช้เครื่องกลาง/เครื่องที่คนอื่นใช้ด้วย")
+        ok = st.form_submit_button("เข้าใช้งาน", width="stretch")
+
+    if ok:
+        kind, data = identify_code(code)
+        if kind == "general":
+            _do_login("general", {}, remember)
+        elif kind == "user":
+            # รู้แล้วว่าเป็นกิจกรรมไหน เหลือถามชื่อ → ไปขั้นที่ 2
+            st.session_state["pending_act"] = {
+                "activity_id": str(data.get("activity_id")),
+                "activity_name": str(data.get("ชื่อกิจกรรม", "")),
+                "remember": remember,
+            }
+            st.rerun()
+        elif kind == "viewer":
+            aid = str(data.get("activity_id"))
+            _do_login("viewer", {
+                "activity_id": aid, "activity_name": _activity_name_of(aid),
+                "viewer_name": str(data.get("ชื่อผู้ดู", "")),
+            }, remember)
+        else:
+            st.error("❌ รหัสไม่ถูกต้อง หรือหมดอายุแล้ว")
+
+    st.divider()
+    _render_public_albums()
+
+    # admin / ผู้ดูแลระบบ — พับไว้ เพราะคนส่วนใหญ่ไม่ได้ใช้ทางนี้
+    with st.expander("🔐 สำหรับ admin / ผู้ดูแลระบบ"):
         _login_staff()
+
+
+def restore_session():
+    """
+    คืน login จาก cookie ตอนเปิดแอป (เรียกก่อน render — เฉพาะตอนที่ยังไม่ได้ login)
+
+    ⚠️ ไม่เชื่อ cookie อย่างเดียว — เช็คสิทธิ์ซ้ำกับชีตทุกครั้ง เพราะระหว่างที่จำไว้
+    กิจกรรมอาจถูกปิด/ลบ หรือบัญชี admin อาจถูกระงับไปแล้ว ถ้าไม่เช็คสิทธิ์จะค้างอยู่
+    """
+    if st.session_state.get("role"):
+        return
+
+    data = session_store.load()
+    if not data:
+        return
+
+    role = data.get("role")
+    ident = data.get("identity") or {}
+
+    if role in ("user", "viewer"):
+        import google_utils as gu
+        aid = str(ident.get("activity_id", ""))
+        acts = gu.load_activities()
+        if acts.empty or "activity_id" not in acts.columns:
+            return
+        m = acts[acts["activity_id"].astype(str) == aid]
+        if m.empty:
+            return                                   # กิจกรรมถูกลบไปแล้ว
+        # คนส่งรูปต้องเข้าได้เฉพาะตอนกิจกรรมยังเปิด ; คนดูอัลบั้มดูย้อนหลังได้แม้ปิดแล้ว
+        if role == "user" and not gu.is_activity_open(m.iloc[0]):
+            return
+
+    elif role == "admin":
+        import google_utils as gu
+        acct = gu.find_user(str(ident.get("username", "")))
+        if not (acct and str(acct.get("สถานะ")) == "ใช้งาน" and str(acct.get("role")) == "admin"):
+            return                                   # บัญชีถูกปิด/ลบ/ลดสิทธิ์แล้ว
+
+    elif role == "superuser":
+        if str(ident.get("username", "")) != str(st.secrets.get("SUPERUSER_USER", "")):
+            return
+
+    elif role != "general":
+        return                                       # role แปลกปลอม ไม่รับ
+
+    st.session_state["role"] = role
+    st.session_state["identity"] = ident
+    st.session_state["view"] = None

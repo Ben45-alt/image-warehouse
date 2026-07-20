@@ -69,6 +69,7 @@ def render_general_warehouse():
 def main():
     auth.ensure_session()
     auth.handle_deeplink()   # อ่าน QR deep-link (?viewcode/?actcode) พาเข้าอัตโนมัติ
+    auth.restore_session()   # ไม่ได้มาจาก QR → ลองคืน login ที่ "จำฉันไว้" จาก cookie
     role = st.session_state.get("role")
     ident = st.session_state.get("identity", {})
 
