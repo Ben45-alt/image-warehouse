@@ -239,15 +239,17 @@ def _signup_admin():
     import google_utils as gu
     import config
 
-    domain = str(getattr(config, "COMPANY_EMAIL_DOMAIN", "") or "").strip()
+    # โดเมนบริษัท: ตรงอันใดอันหนึ่งก็ผ่าน ; list ว่าง = ไม่บังคับ
+    domains = [str(d).strip() for d in getattr(config, "COMPANY_EMAIL_DOMAINS", []) if str(d).strip()]
     st.caption(
         "กรอกข้อมูลแล้วรอหัวหน้ากดอนุมัติ จึงจะเข้าใช้งานได้"
-        + (f" · ต้องใช้อีเมลบริษัท ({domain})" if domain else "")
+        + (f" · ต้องใช้อีเมลบริษัท ({' / '.join(domains)})" if domains else "")
     )
     with st.form("signup_admin", clear_on_submit=False):
         u = st.text_input("username ที่อยากใช้ (ภาษาอังกฤษ/ตัวเลข)")
         fullname = st.text_input("ชื่อ-นามสกุล")
-        email = st.text_input("อีเมลบริษัท", placeholder=f"yourname{domain or '@company.com'}")
+        email = st.text_input("อีเมลบริษัท",
+                              placeholder=f"yourname{domains[0] if domains else '@company.com'}")
         p1 = st.text_input("ตั้งรหัสผ่าน", type="password")
         p2 = st.text_input("ยืนยันรหัสผ่านอีกครั้ง", type="password")
         ok = st.form_submit_button("ส่งคำขอสมัคร", width="stretch")
@@ -264,8 +266,8 @@ def _signup_admin():
     if len(p1) < 6:
         st.error("⚠️ รหัสผ่านต้องยาวอย่างน้อย 6 ตัว")
         return
-    if domain and not email.lower().endswith(domain.lower()):
-        st.error(f"⚠️ ต้องใช้อีเมลบริษัทที่ลงท้ายด้วย {domain} เท่านั้น")
+    if domains and not any(email.lower().endswith(d.lower()) for d in domains):
+        st.error("⚠️ ต้องใช้อีเมลบริษัทที่ลงท้ายด้วย " + " หรือ ".join(domains) + " เท่านั้น")
         return
     if gu.find_user(username):
         st.error(f"❌ username “{username}” มีคนใช้แล้ว — เปลี่ยนชื่ออื่น")
