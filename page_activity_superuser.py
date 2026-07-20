@@ -25,6 +25,7 @@ from google_utils import (
     add_user, set_user_status, delete_user, find_user, pending_users,
     reset_requests, set_user_password,
     EMAIL_HEADER, RESET_REQ_HEADER, USER_ACTIVE,
+    set_activity_join, JOIN_HEADER, JOIN_OPEN, JOIN_CODE,
     set_activity_status, delete_activity, is_activity_open,
     get_storage_quota, get_image_bytes, extract_file_id,
     delete_photo, trash_photo, restore_photo, log_action,
@@ -176,8 +177,16 @@ def _render_manage_activities():
     # กล่องโชว์รหัสกิจกรรมที่เพิ่งสร้าง (ใช้ session key เดียวกับหน้า admin — reuse _create_activity)
     last = st.session_state.get("admin_last_code")
     if last:
-        st.success(f"✅ สร้างกิจกรรม “{last['name']}” แล้ว — แจกรหัสนี้ให้ผู้เข้าร่วม:")
-        render_code_with_qr(last["code"], "su_actcode", kind="act")
+        if last.get("join", JOIN_CODE) == JOIN_OPEN:
+            st.success(
+                f"✅ สร้างกิจกรรม “{last['name']}” แล้ว — **ไม่ต้องแจกรหัส** "
+                "บอกให้เข้าเว็บแล้วกดชื่อกิจกรรมที่หน้าแรกได้เลย"
+            )
+            with st.expander("อยากได้ QR ไว้แปะหน้างานไหม (ไม่บังคับ)"):
+                render_code_with_qr(last["code"], "su_actcode", kind="act")
+        else:
+            st.success(f"✅ สร้างกิจกรรม “{last['name']}” แล้ว — แจกรหัสนี้ให้ผู้เข้าร่วม:")
+            render_code_with_qr(last["code"], "su_actcode", kind="act")
         if st.button("รับทราบ / ปิดข้อความนี้", key="su_dismiss_code"):
             del st.session_state["admin_last_code"]
             st.rerun()
@@ -185,10 +194,17 @@ def _render_manage_activities():
     with st.expander("➕ สร้างกิจกรรมใหม่", expanded=not last):
         with st.form("su_create_activity", clear_on_submit=True):
             name = st.text_input("ชื่อกิจกรรม")
-            code = st.text_input("รหัสเข้ากิจกรรม (เว้นว่าง = สุ่มให้อัตโนมัติ)")
+            join = st.radio(
+                "ใครส่งรูปเข้ากิจกรรมนี้ได้",
+                [JOIN_OPEN, JOIN_CODE],
+                captions=["กดจากหน้าแรกส่งได้เลย เหมาะกับงานทั้งโรงงาน เช่น แห่เทียนพรรษา",
+                          "ต้องมีรหัสถึงส่งได้ เหมาะกับงานเฉพาะกลุ่ม เช่น ลูกค้าเข้าเยี่ยมชม"],
+            )
+            code = st.text_input("รหัสเข้ากิจกรรม (เว้นว่าง = สุ่มให้อัตโนมัติ)",
+                                 help="ใช้เฉพาะกิจกรรมแบบ 'ต้องมีรหัส'")
             ok = st.form_submit_button("สร้างกิจกรรม", width="stretch")
         if ok:
-            _create_activity(su, name, code)   # creator = username ของ superuser
+            _create_activity(su, name, code, join)   # creator = username ของ superuser
 
     st.divider()
 
@@ -206,11 +222,18 @@ def _render_manage_activities():
         n = int(counts.get(aid, 0))
         auto_closed = str(a["สถานะ"]) == "เปิด" and not is_activity_open(a)
         note = " · ⏰ ปิดอัตโนมัติแล้ว (ครบ 7 วัน)" if auto_closed else ""
+        join_now = str(a.get(JOIN_HEADER, "")).strip() or JOIN_CODE
+        join_label = "🌐 ใครก็ส่งได้" if join_now == JOIN_OPEN else "🔒 ต้องมีรหัส"
         c1, c2, c3 = st.columns([5, 2, 2])
         c1.markdown(
             f"**{a['ชื่อกิจกรรม']}**  \n"
-            f"สถานะ: {a['สถานะ']}{note} · 🛠️ {a.get('คนสร้าง','?')} · {n} รูป · สร้างเมื่อ {a.get('วันที่สร้าง','')}"
+            f"สถานะ: {a['สถานะ']}{note} · {join_label} · 🛠️ {a.get('คนสร้าง','?')} · {n} รูป · สร้างเมื่อ {a.get('วันที่สร้าง','')}"
         )
+        _other = JOIN_CODE if join_now == JOIN_OPEN else JOIN_OPEN
+        if st.button(("🔒 เปลี่ยนเป็น 'ต้องมีรหัส'" if _other == JOIN_CODE
+                      else "🌐 เปลี่ยนเป็น 'ใครก็ส่งได้'"), key=f"su_join_{aid}"):
+            set_activity_join(aid, _other)
+            st.rerun()
         if str(a["สถานะ"]) == "เปิด":
             if c2.button("⏸️ ปิดกิจกรรม", key=f"su_close_{aid}", width="stretch"):
                 set_activity_status(aid, "ปิด")

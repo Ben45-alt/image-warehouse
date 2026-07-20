@@ -346,6 +346,26 @@ def find_share_by_code(code_plain: str):
     return None
 
 
+def _render_open_activities(remember: bool = True):
+    """
+    ปุ่มกิจกรรมที่ "ใครก็ส่งรูปได้" — กดชื่อแล้วข้ามไปกรอกชื่อตัวเองได้เลย ไม่ต้องมีรหัส
+    (แนวคิดจากหัวหน้า: ให้ส่งง่ายเหมือนกลุ่มไลน์ ใครอยู่ก็ส่งๆ ไป)
+    """
+    import google_utils as gu  # lazy import กัน circular import
+    opens = gu.open_join_activities()
+    if opens.empty:
+        return
+    st.markdown("**📤 ส่งรูปเข้ากิจกรรมที่เปิดให้ทุกคน — กดได้เลย ไม่ต้องใช้รหัส**")
+    for _, a in opens.iterrows():
+        aid = str(a["activity_id"])
+        nm = str(a["ชื่อกิจกรรม"])
+        if st.button(f"📤 {nm}", key=f"openact_{aid}", width="stretch"):
+            st.session_state["pending_act"] = {
+                "activity_id": aid, "activity_name": nm, "remember": remember,
+            }
+            st.rerun()
+
+
 def _render_public_albums():
     """ปุ่มอัลบั้มสาธารณะ — กดชื่อเข้าดูได้เลย ไม่ต้องมีรหัส (ของเดิม ย้ายมาไว้ใต้ช่องรหัส)"""
     import google_utils as gu  # lazy import กัน circular import
@@ -457,6 +477,7 @@ def render_landing():
             st.error("❌ รหัสไม่ถูกต้อง หรือหมดอายุแล้ว")
 
     st.divider()
+    _render_open_activities(remember)
     _render_public_albums()
 
     # admin / ผู้ดูแลระบบ — พับไว้ เพราะคนส่วนใหญ่ไม่ได้ใช้ทางนี้

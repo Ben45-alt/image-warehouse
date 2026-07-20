@@ -521,6 +521,10 @@ AUTO_CLOSE_DAYS = 7                                # กิจกรรมปิ
 VISIBILITY_HEADER = "การมองเห็น"                     # คอลัมน์เพิ่มในแท็บ Activities
 VIS_PUBLIC = "ทุกคน"                                # อัลบั้มสาธารณะ — ใครก็ดูได้
 VIS_PRIVATE = "เฉพาะคน"                             # อัลบั้มเฉพาะคนที่แชร์ (ค่าเริ่มต้น)
+# การเข้าร่วม: ใครส่งรูปเข้ากิจกรรมนี้ได้บ้าง (คนละเรื่องกับ "การมองเห็น" ที่คุมการดูอัลบั้ม)
+JOIN_HEADER = "การเข้าร่วม"                          # คอลัมน์เพิ่มในแท็บ Activities
+JOIN_OPEN = "ใครก็ได้"                              # เปิดให้ส่งเลย ไม่ต้องมีรหัส (กิจกรรมทั้งโรงงาน)
+JOIN_CODE = "ต้องมีรหัส"                            # ต้องกรอกรหัสก่อน (กิจกรรมเฉพาะกลุ่ม เช่น ลูกค้าเข้า)
 SHARES_TAB = "Shares"                              # แท็บเก็บรายชื่อคนที่แชร์ให้ดู + รหัสดูส่วนตัว
 SHARES_HEADER = ["activity_id", "ชื่อผู้ดู", "รหัสดู_hash", "วันที่เพิ่ม", "สถานะ"]
 
@@ -528,8 +532,10 @@ ACTIVITIES_TAB = "Activities"                      # แท็บเก็บร
 USERS_TAB = "Users"                                # แท็บเก็บบัญชี admin
 ACTIVITIES_HEADER = [
     "activity_id", "ชื่อกิจกรรม", "รหัสเข้า_hash", "คนสร้าง", "วันที่สร้าง", "สถานะ",
-    VISIBILITY_HEADER,
+    VISIBILITY_HEADER, JOIN_HEADER,
 ]
+# คอลัมน์ที่เพิ่มทีหลังในแท็บ Activities — ต่อท้ายเสมอ (6 คอลัมน์แรกห้ามขยับ)
+_EXTRA_ACTIVITIES_COLS = [VISIBILITY_HEADER, JOIN_HEADER]
 EMAIL_HEADER = "อีเมล"                              # คอลัมน์ที่ 6 ในแท็บ Users (เพิ่มตอนทำ "สมัครเอง")
 RESET_REQ_HEADER = "ขอรีเซ็ต"                        # คอลัมน์ที่ 7 — ""(ไม่ได้ขอ) / วันเวลาที่กดลืมรหัส
 USERS_HEADER = ["username", "password_hash", "ชื่อ-นามสกุล", "role", "สถานะ", EMAIL_HEADER,
@@ -578,8 +584,10 @@ def ensure_schema():
     # แท็บ Activities: สร้างถ้ายังไม่มี + เพิ่มคอลัมน์ "การมองเห็น" ให้ชีตเก่าที่ยังไม่มี
     aws = _ensure_tab(ss, ACTIVITIES_TAB, ACTIVITIES_HEADER)
     ahead = aws.row_values(1)
-    if VISIBILITY_HEADER not in ahead:
-        aws.update_cell(1, len(ahead) + 1, VISIBILITY_HEADER)
+    for col in _EXTRA_ACTIVITIES_COLS:
+        if col not in ahead:
+            aws.update_cell(1, len(ahead) + 1, col)
+            ahead.append(col)
     # แท็บ Users: สร้างถ้ายังไม่มี + เติมคอลัมน์ที่เพิ่มทีหลังต่อท้ายทีละอัน (idempotent)
     # (ต่อท้ายเสมอ — คอลัมน์ 1-5 เดิมห้ามขยับ เพราะ add_user/set_user_status อ้างตำแหน่ง)
     uws = _ensure_tab(ss, USERS_TAB, USERS_HEADER)
@@ -621,11 +629,14 @@ def load_activities() -> pd.DataFrame:
 
 
 def add_activity(activity_id, name, code_hash, creator, created_date, status="เปิด",
-                 visibility=VIS_PRIVATE):
-    """เพิ่มกิจกรรมใหม่ 1 รายการ (รหัสเข้าเก็บเป็น hash แล้ว) — ค่าเริ่มต้นอัลบั้ม = เฉพาะคน (private)"""
+                 visibility=VIS_PRIVATE, join=JOIN_OPEN):
+    """
+    เพิ่มกิจกรรมใหม่ 1 รายการ (รหัสเข้าเก็บเป็น hash แล้ว)
+    ค่าเริ่มต้น: ดูอัลบั้ม = เฉพาะคน (กันส่อง) · ส่งรูป = ใครก็ได้ (ส่งง่ายเหมือนกลุ่มไลน์)
+    """
     ws = get_activities_ws()
     _retry(lambda: ws.append_row(
-        [activity_id, name, code_hash, creator, created_date, status, visibility],
+        [activity_id, name, code_hash, creator, created_date, status, visibility, join],
         value_input_option="USER_ENTERED",
     ))
     load_activities.clear()  # ล้าง cache เพื่อให้รายการใหม่ขึ้นทันที
@@ -698,6 +709,47 @@ def public_activities() -> pd.DataFrame:
     if df.empty or VISIBILITY_HEADER not in df.columns:
         return df.iloc[0:0] if not df.empty else pd.DataFrame()
     return df[df[VISIBILITY_HEADER].astype(str).str.strip() == VIS_PUBLIC].copy()
+
+
+def get_activity_join(activity_id) -> str:
+    """
+    กิจกรรมนี้ส่งรูปเข้าได้ยังไง — คืน JOIN_OPEN/JOIN_CODE
+    ค่าว่าง/ไม่มีคอลัมน์ = JOIN_CODE (กิจกรรมเก่าที่สร้างก่อนมีฟีเจอร์นี้ ยังต้องใช้รหัสเหมือนเดิม)
+    """
+    df = load_activities()
+    if df.empty or JOIN_HEADER not in df.columns:
+        return JOIN_CODE
+    m = df[df["activity_id"].astype(str) == str(activity_id)]
+    if m.empty:
+        return JOIN_CODE
+    v = str(m.iloc[0].get(JOIN_HEADER, "")).strip()
+    return v if v in (JOIN_OPEN, JOIN_CODE) else JOIN_CODE
+
+
+def set_activity_join(activity_id, mode) -> None:
+    """ตั้งว่ากิจกรรมนี้ต้องมีรหัสไหม — หาแถวจาก activity_id แก้คอลัมน์ การเข้าร่วม"""
+    ws = get_activities_ws()
+    header = ws.row_values(1)
+    row = _find_row(ws, activity_id, 1)
+    if row and JOIN_HEADER in header:
+        col = header.index(JOIN_HEADER) + 1
+        _retry(lambda: ws.update_cell(row, col, mode))
+        load_activities.clear()
+
+
+def open_join_activities() -> pd.DataFrame:
+    """
+    กิจกรรมที่ "ใครก็ส่งรูปได้ ไม่ต้องมีรหัส" และยังเปิดอยู่จริง (รวมเช็ค auto-close 7 วัน)
+    → เอาไปโชว์เป็นปุ่มบนหน้าแรก กดแล้วส่งรูปได้เลย
+    """
+    df = load_activities()
+    if df.empty or JOIN_HEADER not in df.columns:
+        return pd.DataFrame()
+    opened = df[df[JOIN_HEADER].astype(str).str.strip() == JOIN_OPEN]
+    if opened.empty:
+        return pd.DataFrame()
+    keep = [is_activity_open(r) for _, r in opened.iterrows()]
+    return opened[keep].copy()
 
 
 @st.cache_resource
