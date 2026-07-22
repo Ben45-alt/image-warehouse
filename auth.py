@@ -87,9 +87,53 @@ def _do_login(role: str, identity: dict, remember: bool):
     st.session_state["identity"] = identity
     st.session_state["view"] = None
     st.session_state.pop("pending_act", None)
+    st.session_state["scroll_top"] = True    # หน้าใหม่ให้เริ่มที่บนสุดเสมอ (ดู scroll_to_top())
     if remember:
         session_store.save(role, identity)
     st.rerun()
+
+
+def scroll_to_top():
+    """
+    เลื่อนหน้าจอขึ้นบนสุด "ครั้งเดียว" หลัง login (เรียกบนสุดของ main())
+
+    ทำไมต้องทำ: Streamlit ไม่รีเซ็ตตำแหน่งเลื่อนเวลาเปลี่ยนหน้า (มัน rerun หน้าเดิม)
+    → ถ้าผู้ใช้เลื่อนลงไปกรอกรหัสในแถบ admin ที่อยู่ล่างสุด พอ login ผ่าน
+      หน้าถัดไปจะเปิดมาค้างอยู่ตรงกลาง/ล่าง เหมือนหน้าโหลดไม่ครบ
+
+    วิธี: ฝัง <script> เล็กๆ (iframe สูง 0) แล้วสั่งเลื่อน "หน้าแม่" ขึ้นบนสุด
+    - ยิงซ้ำ 3 จังหวะ เพราะเนื้อหาจริงเรนเดอร์เสร็จทีหลัง (ยิงครั้งเดียวบางทีไม่ทัน)
+    - เผื่อไว้หลายตัวเลือก เพราะ Streamlit เปลี่ยนชื่อคอนเทนเนอร์ที่เลื่อนได้บ่อยตามเวอร์ชัน
+    - ครอบ try/except: ถ้าฝัง component ไม่ได้ก็แค่ "ไม่เด้ง" ไม่ทำให้แอปพัง
+    """
+    if not st.session_state.pop("scroll_top", False):
+        return
+    try:
+        import streamlit.components.v1 as components
+        components.html(
+            """
+            <script>
+            (function () {
+              const doc = window.parent.document;
+              const goTop = function () {
+                const targets = [window.parent, doc.scrollingElement, doc.body];
+                doc.querySelectorAll(
+                  'section.main, [data-testid="stMain"], [data-testid="stAppViewContainer"]'
+                ).forEach(function (el) { targets.push(el); });
+                targets.forEach(function (t) {
+                  try { t.scrollTo({ top: 0, behavior: 'instant' }); } catch (e) {}
+                });
+              };
+              goTop();
+              setTimeout(goTop, 60);
+              setTimeout(goTop, 250);
+            })();
+            </script>
+            """,
+            height=0,
+        )
+    except Exception:
+        pass
 
 
 def render_topbar_logout(label: str = "", show_refresh: bool = False):
@@ -380,6 +424,7 @@ def _render_open_activities(remember: bool = True) -> bool:
                 "activity_id": aid, "activity_name": nm, "remember": remember,
                 "no_code": True,      # มาทางปุ่ม 🌐 = ไม่ได้กรอกรหัส (ใช้เลือกข้อความหน้าถัดไป)
             }
+            st.session_state["scroll_top"] = True     # ขั้นถัดไปเริ่มที่บนสุด
             st.rerun()
     return True
 
@@ -495,6 +540,7 @@ def render_landing():
                 "activity_name": str(data.get("ชื่อกิจกรรม", "")),
                 "remember": remember,
             }
+            st.session_state["scroll_top"] = True     # ขั้นถัดไปเริ่มที่บนสุด
             st.rerun()
         elif kind == "viewer":
             aid = str(data.get("activity_id"))

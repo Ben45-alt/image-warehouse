@@ -70,6 +70,7 @@ def main():
     auth.ensure_session()
     auth.handle_deeplink()   # อ่าน QR deep-link (?viewcode/?actcode) พาเข้าอัตโนมัติ
     auth.restore_session()   # ไม่ได้มาจาก QR → ลองคืน login ที่ "จำฉันไว้" จาก cookie
+    auth.scroll_to_top()     # เพิ่ง login มา → เด้งขึ้นบนสุด (ทำครั้งเดียว)
     role = st.session_state.get("role")
     ident = st.session_state.get("identity", {})
 
