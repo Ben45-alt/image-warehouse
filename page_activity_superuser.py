@@ -24,7 +24,7 @@ from google_utils import (
     load_activities, load_users, load_data, load_active_data, load_trash_data, load_log,
     add_user, set_user_status, delete_user, find_user, pending_users,
     reset_requests, set_user_password,
-    EMAIL_HEADER, RESET_REQ_HEADER, USER_ACTIVE,
+    EMAIL_HEADER, RESET_REQ_HEADER, USER_ACTIVE, USER_PENDING,
     set_activity_join, JOIN_HEADER, JOIN_OPEN, JOIN_CODE,
     set_activity_status, delete_activity, is_activity_open,
     get_storage_quota, get_image_bytes, extract_file_id,
@@ -327,9 +327,12 @@ def _render_all_gallery():
     rows = sub.to_dict("records")
     for i in range(0, len(rows), COLS_PER_ROW):
         cols = st.columns(COLS_PER_ROW)
-        for col, item in zip(cols, rows[i:i + COLS_PER_ROW]):
+        for j, (col, item) in enumerate(zip(cols, rows[i:i + COLS_PER_ROW])):
             with col:
                 file_id = extract_file_id(item["ลิงก์รูป"])
+                # ⚠️ ใส่ลำดับแถวในคีย์ด้วย — extract_file_id คืน "" ถ้าลิงก์ว่าง/ไม่ใช่ลิงก์ Drive
+                #    ถ้ามีแถวเสียตั้งแต่ 2 ใบขึ้นไป คีย์จะชนกันแล้วทั้งแท็บเรนเดอร์ไม่ขึ้น
+                uid = f"{i + j}_{file_id}"
                 try:
                     st.image(get_image_bytes(file_id), width="stretch")
                 except Exception:
@@ -342,14 +345,14 @@ def _render_all_gallery():
                 download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
                 st.link_button("⬇️ ดาวน์โหลด", download_url, width="stretch")
 
-                render_publish_toggle(item, "su", su, "superuser")
+                render_publish_toggle(item, f"su{uid}", su, "superuser")
 
                 # ลบรูป → ย้ายไปถังขยะ (กู้คืนได้ ~30 วัน) มีขั้นยืนยัน
-                del_key = f"su_confirm_del_{file_id}"
+                del_key = f"su_confirm_del_{uid}"
                 if st.session_state.get(del_key):
                     st.warning("⚠️ ย้ายรูปนี้ไปถังขยะ? (กู้คืนได้ที่แท็บถังขยะ ~30 วัน)")
                     y, no = st.columns(2)
-                    if y.button("✅ ย้ายไปถังขยะ", key=f"su_yes_{file_id}", width="stretch"):
+                    if y.button("✅ ย้ายไปถังขยะ", key=f"su_yes_{uid}", width="stretch"):
                         try:
                             su = st.session_state.get("identity", {}).get("username", "superuser")
                             trash_photo(file_id, item["ลิงก์รูป"], deleted_by=su)
@@ -361,11 +364,11 @@ def _render_all_gallery():
                             st.rerun()
                         except Exception as e:
                             st.error(f"ลบไม่สำเร็จ: {e}")
-                    if no.button("❌ ยกเลิก", key=f"su_no_{file_id}", width="stretch"):
+                    if no.button("❌ ยกเลิก", key=f"su_no_{uid}", width="stretch"):
                         st.session_state.pop(del_key, None)
                         st.rerun()
                 else:
-                    if st.button("🗑️ ลบรูปนี้", key=f"su_del_{file_id}", width="stretch"):
+                    if st.button("🗑️ ลบรูปนี้", key=f"su_del_{uid}", width="stretch"):
                         st.session_state[del_key] = True
                         st.rerun()
 
@@ -398,9 +401,10 @@ def _render_trash():
     rows = trash.to_dict("records")
     for i in range(0, len(rows), COLS_PER_ROW):
         cols = st.columns(COLS_PER_ROW)
-        for col, item in zip(cols, rows[i:i + COLS_PER_ROW]):
+        for j, (col, item) in enumerate(zip(cols, rows[i:i + COLS_PER_ROW])):
             with col:
                 file_id = extract_file_id(item["ลิงก์รูป"])
+                uid = f"{i + j}_{file_id}"      # ใส่ลำดับกันคีย์ชนตอน file_id ว่าง (ลิงก์เสีย)
                 try:
                     st.image(get_image_bytes(file_id), width="stretch")
                 except Exception:
@@ -412,7 +416,7 @@ def _render_trash():
                     f"โดย {item.get('ลบโดย','')}"
                 )
                 r1, r2 = st.columns(2)
-                if r1.button("♻️ กู้คืน", key=f"su_restore_{file_id}", width="stretch"):
+                if r1.button("♻️ กู้คืน", key=f"su_restore_{uid}", width="stretch"):
                     try:
                         restore_photo(file_id, item["ลิงก์รูป"])
                         log_action(su, "superuser", "กู้คืนรูป",
@@ -422,9 +426,9 @@ def _render_trash():
                     except Exception as e:
                         st.error(f"กู้คืนไม่สำเร็จ: {e}")
 
-                purge_key = f"su_confirm_purge_{file_id}"
+                purge_key = f"su_confirm_purge_{uid}"
                 if st.session_state.get(purge_key):
-                    if r2.button("⚠️ ยืนยันลบถาวร", key=f"su_purge_yes_{file_id}", width="stretch"):
+                    if r2.button("⚠️ ยืนยันลบถาวร", key=f"su_purge_yes_{uid}", width="stretch"):
                         try:
                             delete_photo(file_id, item["ลิงก์รูป"])
                             log_action(su, "superuser", "ลบรูปถาวร",
@@ -435,7 +439,7 @@ def _render_trash():
                         except Exception as e:
                             st.error(f"ลบไม่สำเร็จ: {e}")
                 else:
-                    if r2.button("🔥 ลบถาวร", key=f"su_purge_{file_id}", width="stretch"):
+                    if r2.button("🔥 ลบถาวร", key=f"su_purge_{uid}", width="stretch"):
                         st.session_state[purge_key] = True
                         st.rerun()
 
@@ -463,6 +467,11 @@ def _render_admin_accounts():
 
     # ---- รายชื่อบัญชี admin ----
     admins = load_users()
+    # ตัดบัญชีที่ "รออนุมัติ" ออก — เขาอยู่ในกล่องอนุมัติด้านบนแล้ว
+    # ⚠️ ถ้าปล่อยไว้จะมีปุ่ม "▶️ เปิดใช้งาน" ที่เปิดบัญชีโดย "ไม่ได้ตั้งรหัสให้"
+    #    → รหัสว่าง = เจ้าตัว login ไม่ได้ ซ้ำยังหลุดจากคิวอนุมัติไปเลย (บัญชีค้างเปล่าๆ)
+    if not admins.empty and "สถานะ" in admins.columns:
+        admins = admins[admins["สถานะ"].astype(str).str.strip() != USER_PENDING]
     if admins.empty:
         st.info("ยังไม่มีบัญชี admin — สร้างอันแรกด้านบนได้เลย")
         return

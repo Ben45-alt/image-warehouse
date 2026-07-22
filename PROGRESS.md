@@ -33,6 +33,57 @@
 
 ---
 
+## 🐞 Bug-hunt (code review โดย Claude, 2026-07-22)
+
+> ไล่อ่านโค้ดจริงหาบั๊ก เน้นของใหม่ที่ "รอทดสอบบนเว็บจริง" (auth อีเมล/สมัคร/ลืมรหัส + data layer)
+> **✅ แก้ครบทั้ง 8 ข้อแล้ว (2026-07-22) — เทสต์ในเครื่องผ่าน 51/51** (รายละเอียดวิธีแก้ต่อท้ายแต่ละข้อ)
+
+**🔴 #1 [Med-High] cookie ที่ถูกแก้/เพี้ยน → หน้าแรก crash** — `session_store.py:75-77` (`read_token`)
+- `body.encode("ascii")` และ `hmac.compare_digest(sig, expect)` อยู่ **นอก** try/except ; `sig`/`body` มาจาก cookie ที่ผู้ใช้แก้เองได้ ถ้ามีอักขระ non-ASCII → `UnicodeEncodeError`/`TypeError` (บั๊กคลาส `compare_digest` เดิมเป๊ะ แต่ตกหล่นตรงจุด input ที่ไม่น่าเชื่อถือ)
+- `load()` (บรรทัด 126) และ `app.main()` (บรรทัด 72) ก็ไม่ครอบ → error เด้งถึงหน้าจอ **ผู้ใช้เข้าเว็บไม่ได้จนกว่าจะล้าง cookie เอง**
+- คอมเมนต์บรรทัด 76 ที่ว่า "ทั้งคู่เป็น hex ASCII จึงปลอดภัย" จริงเฉพาะ token ที่ถูกต้อง ไม่จริงกับ cookie ที่ถูกแก้
+- ✅ **แก้แล้ว:** ครอบทั้ง `read_token` ด้วย `try/except Exception: return None` — cookie เพี้ยน = "ไม่ได้จำ login ไว้" · เทสต์ยิง cookie ขยะ 7 แบบ (ไทย/ตัดกลาง/ยาว 500 ตัว) ไม่ throw + token ปกติยังอ่านได้
+
+**🟠 #2 [Med] กด "เปิดใช้งาน" บัญชีที่รออนุมัติได้ โดยไม่ตั้งรหัส → บัญชีค้าง login ไม่ได้** — `page_activity_superuser.py:485-489`
+- "รายชื่อบัญชี admin ทั้งหมด" วน `load_users()` รวมบัญชีสถานะ `รออนุมัติ` ด้วย → บัญชี pending โชว์ปุ่ม "▶️ เปิดใช้งาน" → กดแล้วเรียก `set_user_status(uname,"ใช้งาน")` เฉยๆ **ไม่ได้ตั้งรหัส**
+- บัญชีสมัครเอง hash ว่าง → active แต่ `verify_secret` คืน False เสมอ = login ไม่ได้ + หลุดจากคิว `pending_users()` (ไม่โผล่ในกล่องอนุมัติอีก) → superuser ต้องไปตั้งรหัสใน expander เอง ถึงจะใช้ได้
+- ✅ **แก้แล้ว:** กรอง `USER_PENDING` ออกจาก loop รายชื่อ → เปิดใช้งานได้ทางเดียวคือฟอร์มอนุมัติที่บังคับตั้งรหัสก่อน
+
+**🟠 #3 [Low-Med] SUPERUSER_PASS ว่าง → รหัสว่างล็อกอิน superuser ได้** — `auth.py:207`
+- `secrets_equal("","")` คืน True (sha256 ของ "" เท่ากัน) ; ถ้า `SUPERUSER_PASS` ไม่ตั้ง/ว่าง แล้ว `SUPERUSER_USER` ตั้ง → ใครกรอก user นั้น + เว้นรหัสว่าง = ได้สิทธิ์ superuser
+- ต่างจาก admin (กัน hash ว่าง) และ APP_PASSWORD (กัน code ว่าง) — จุดนี้ไม่มีการ์ด ; ปัจจุบันปลอดภัยถ้า secrets ตั้งครบ แต่ควรกันเชิงรับ
+- ✅ **แก้แล้ว:** เพิ่มการ์ด `su_user and su_pass and p` ก่อนเทียบ → secrets ตกหล่นก็ไม่มีทางเข้าด้วยรหัสว่าง
+
+**🟡 #4 [Low-Med] ถอนสิทธิ์ดูอัลบั้มแล้ว viewer ที่ติ๊ก "จำฉันไว้" ยังดูได้ ~1 วัน** — `auth.py restore_session` (role=viewer)
+- ตอน login `find_share_by_code()` กันแชร์ที่ถูกถอน (สถานะ ปิด) แต่ `restore_session` ของ viewer เช็คแค่ว่ากิจกรรมยังอยู่ ไม่ได้เช็ค share code ซ้ำ → refresh แล้วได้สิทธิ์คืนจนกว่า cookie หมดอายุ
+- ✅ **แก้แล้ว:** เพิ่ม `auth._viewer_still_allowed(activity_id, viewer_name)` เรียกใน `restore_session` — อัลบั้มสาธารณะผ่านเสมอ / อัลบั้มเฉพาะคนต้องยังมีแถวแชร์ชื่อนั้นและสถานะไม่ใช่ "ปิด" (อ่านชีตไม่ได้ = ไม่คืนสิทธิ์)
+
+**🟡 #5 [Low] แถวรูปที่ลิงก์ว่าง 2 แถวขึ้นไป → widget key ซ้ำ ทั้งแท็บพัง** — `page_activity_superuser.py` (gallery ~348-368, trash ~415-438)
+- key ปุ่มใช้ `file_id` ล้วน ; `extract_file_id()` คืน "" ถ้า `ลิงก์รูป` ว่าง/ไม่ใช่ลิงก์ Drive → 2 แถวเสีย = key ชนกัน → `StreamlitDuplicateElementKey` เรนเดอร์ทั้งแท็บล้ม
+- ✅ **แก้แล้ว:** ทำ `uid = f"{i+j}_{file_id}"` ใช้เป็นคีย์ทุกปุ่มในกริดรูป — **แก้ทั้ง 3 หน้าที่มีแพตเทิร์นเดียวกัน** (superuser คลัง+ถังขยะ · admin คลัง+ถังขยะ+สแกนรูปซ้ำ · คลังทั่วไป) ไม่ใช่เฉพาะที่ review ชี้
+
+**🟡 #6 [Low] `add_user` เขียนอีเมลแบบอิงตำแหน่ง (เปราะ)** — `google_utils.py:813`
+- `append_row([username,password_hash,fullname,role,status,email])` = อิงตำแหน่งช่อง 6 ; แต่ทุกจุดที่ *อ่าน* (`find_user`,`email_taken`) และ reset ใช้ header-lookup — ตอนนี้ยังถูกเพราะลำดับคอลัมน์ตรง แต่ถ้าคอลัมน์สลับ อีเมลจะไปลงผิดช่อง
+- ✅ **แก้แล้ว:** `add_user` หาตำแหน่งคอลัมน์อีเมลด้วย `_users_col(EMAIL_HEADER)` (คอลัมน์ 1-5 ยังตรึงตำแหน่งเหมือนเดิมตามที่โค้ดอื่นอ้าง)
+
+**🟡 #7 [Low] `set_user_status`/`set_activity_status` ไม่มี guard `row > 1`** — `google_utils.py` (~831, ~648)
+- ฟังก์ชันลบอื่นกัน `row>1` กันทับหัวตาราง แต่ 2 ตัวนี้ไม่กัน ; ถ้า username=="username" (หรือ activity_id=="activity_id") → เขียนทับ header
+- ✅ **แก้แล้ว:** เติม `and row > 1` ทั้ง `set_user_status` และ `set_activity_status` (+ `set_user_status` เรียก `resolve_username` ให้รองรับการพิมพ์อีเมล)
+
+**🟡 #8 [Low] `delete_photo` ไม่ล้าง `load_data` cache** — `google_utils.py:139-160`
+- ต่างจาก `trash_photo`/`restore_photo` ที่ล้าง ; ตอนนี้ไม่พังเพราะ caller ล้าง cache ต่อ แต่เป็นกับดัก stale cache สำหรับ caller ในอนาคต
+- ✅ **แก้แล้ว:** เติม `load_data.clear()` ท้าย `delete_photo` ให้เหมือน `trash_photo`/`restore_photo`
+
+**✅ จุดที่ review แล้วปลอดภัย (ยืนยัน):** บัญชี hash ว่าง login ไม่ได้จริง (`verify_secret` กัน) · cookie ปลอมยกระดับเป็น superuser ไม่ได้ (HMAC + เช็ค username ซ้ำกับ secrets) · บัญชี pending/ปิด คืนสิทธิ์ผ่าน cookie ไม่ได้ · `find_user("")` คืน None แล้ว (บั๊กเดิมแก้จริง) · `secrets_equal`/`verify_secret` ไม่ throw กับภาษาไทย (บั๊ก compare_digest เดิมแก้ครบ **ยกเว้น #1**)
+
+**🧪 เทสต์หลังแก้ (สตับ streamlit + import จริงทุกโมดูล): ผ่าน 51/51** — เพิ่มเคสคุมบั๊กทั้ง 8 ข้อไว้แล้ว (cookie ขยะ · pending ไม่โผล่ในรายชื่อ · superuser รหัสว่าง · viewer ถูกถอนสิทธิ์ · คีย์ปุ่มซ้ำ · header lookup · guard หัวตาราง · cache)
+
+**🌐 หลัง deploy ควรลองบนเว็บ:** เข้าเว็บด้วย cookie เดิม (ต้องไม่หลุด) · superuser: บัญชีรออนุมัติต้องอยู่แค่ในกล่องอนุมัติ ไม่โผล่ในรายชื่อล่าง · ลบ/กู้คืนรูปในคลังภาพยังทำงานปกติ (คีย์ปุ่มเปลี่ยน)
+
+**⏳ ยังไม่ได้เทสต์ผ่านเบราว์เซอร์ (ติด login แท็บที่ควบคุมไม่ได้):** ค้นหา/กรองคลังภาพ (คำค้นไม่เจอ/ช่วงวันที่) · ปุ่มหารูปซ้ำ pHash · validation ฟอร์มสร้างกิจกรรมชื่อว่าง · Log filter+เลขหน้าเกินขอบ — (deep-link รหัสผิดเทสต์แล้ว ผ่าน ไม่ crash)
+
+---
+
 ## 📧 ขอเปิดบัญชี = กรอกอีเมลช่องเดียว (2026-07-22)
 
 > **โจทย์จากหัวหน้า (2 ข้อ):** *"ตรงสมัครบัญชี ไม่ต้องใช้ user ใช้เมลไปเลย"* + *"เอารหัสผ่านออกตอนสมัคร เราเป็นคนให้รหัสเอง ... ปิดให้ใส่รหัสแบบนี้ เดี๋ยวก็ตั้งกันแล้วก็จำไม่ได้อีก"*

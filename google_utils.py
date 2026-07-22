@@ -158,6 +158,7 @@ def delete_photo(file_id: str, link: str):
         cell = None
     if cell:
         _retry(lambda: ws.delete_rows(cell.row))
+    load_data.clear()      # ล้าง cache ให้เหมือน trash_photo/restore_photo (กันคนเรียกทีหลังได้ข้อมูลเก่า)
 
 
 # ---------------------------------------------------------------------------
@@ -646,7 +647,7 @@ def set_activity_status(activity_id, status):
     """เปลี่ยนสถานะกิจกรรม (เปิด/ปิด) — หาแถวจาก activity_id (คอลัมน์ 1) แก้คอลัมน์ 6"""
     ws = get_activities_ws()
     row = _find_row(ws, activity_id, 1)
-    if row:
+    if row and row > 1:            # กันเขียนทับแถวหัวตาราง (ถ้าค่าที่หาบังเอิญตรงกับชื่อหัวคอลัมน์)
         _retry(lambda: ws.update_cell(row, 6, status))
         load_activities.clear()
 
@@ -810,10 +811,16 @@ def add_user(username, password_hash, fullname, role="admin", status=USER_ACTIVE
     status=USER_PENDING = คนสมัครเอง ยัง login ไม่ได้จนกว่า superuser จะกดอนุมัติ
     """
     ws = get_users_ws()
-    _retry(lambda: ws.append_row(
-        [username, password_hash, fullname, role, status, email],
-        value_input_option="USER_ENTERED",
-    ))
+    # คอลัมน์ 1-5 ตรึงตำแหน่งไว้ (add_user/set_user_status อ้างตำแหน่งนี้ทั้งหมด)
+    # ส่วนคอลัมน์ที่เติมทีหลัง (อีเมล) หาตำแหน่งจาก "หัวตารางจริง" เหมือนที่ฝั่งอ่านใช้
+    # → ถ้าวันหน้าลำดับคอลัมน์ท้ายๆ สลับ อีเมลก็ยังลงถูกช่อง
+    row = [username, password_hash, fullname, role, status]
+    col = _users_col(EMAIL_HEADER)
+    if col:
+        while len(row) < col:
+            row.append("")
+        row[col - 1] = email
+    _retry(lambda: ws.append_row(row, value_input_option="USER_ENTERED"))
     load_users.clear()  # ล้าง cache เพื่อให้บัญชีใหม่ขึ้นทันที
 
 
@@ -828,8 +835,8 @@ def pending_users() -> pd.DataFrame:
 def set_user_status(username, status):
     """เปลี่ยนสถานะบัญชี (ใช้งาน/ปิด) — หาแถวจาก username (คอลัมน์ 1) แก้คอลัมน์ 5"""
     ws = get_users_ws()
-    row = _find_row(ws, username, 1)
-    if row:
+    row = _find_row(ws, resolve_username(username), 1)
+    if row and row > 1:            # กันเขียนทับแถวหัวตาราง
         _retry(lambda: ws.update_cell(row, 5, status))
         load_users.clear()
 

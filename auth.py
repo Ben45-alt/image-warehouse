@@ -202,9 +202,12 @@ def _login_staff():
     username = u.strip()
 
     # 1) เช็ค superuser ก่อน (รหัสอยู่ใน secrets, เก็บเป็น plain ได้เพราะ secrets ปลอดภัย)
-    su_user = st.secrets.get("SUPERUSER_USER", "")
-    su_pass = st.secrets.get("SUPERUSER_PASS", "")
-    if username and username == su_user and secrets_equal(p, su_pass):
+    su_user = str(st.secrets.get("SUPERUSER_USER", "") or "")
+    su_pass = str(st.secrets.get("SUPERUSER_PASS", "") or "")
+    # ⚠️ ต้องเช็คว่า su_pass/p ไม่ว่างด้วย: secrets_equal("","") คืน True
+    #    ถ้าวันไหน secrets ตกหล่น (เช่นวางผิดใต้ [google_oauth] แบบที่เคยเจอ) จะกลายเป็นว่า
+    #    ใครกรอกชื่อ superuser แล้วเว้นรหัสว่าง = ได้สิทธิ์สูงสุดทันที
+    if username and su_user and su_pass and p and username == su_user and secrets_equal(p, su_pass):
         _do_login("superuser", {"username": username}, remember)
         return
 
@@ -495,6 +498,28 @@ def render_landing():
             _forgot_password()
 
 
+def _viewer_still_allowed(activity_id: str, viewer_name: str) -> bool:
+    """
+    คนดูอัลบั้มคนนี้ยังมีสิทธิ์ดูอยู่ไหม (ใช้ตอนคืน login จาก cookie)
+
+    - อัลบั้มสาธารณะ (🌐 ทุกคน) → ดูได้เสมอ
+    - อัลบั้มเฉพาะคน → ต้องยังมีแถวแชร์ชื่อนี้อยู่ และสถานะไม่ใช่ "ปิด"
+      (ถอนสิทธิ์ = ลบแถวทิ้ง → ไม่เจอ = หมดสิทธิ์)
+    """
+    import google_utils as gu
+    try:
+        if gu.get_activity_visibility(activity_id) == gu.VIS_PUBLIC:
+            return True
+        df = gu.load_shares()
+        if df.empty or "ชื่อผู้ดู" not in df.columns:
+            return False
+        m = df[(df["activity_id"].astype(str) == str(activity_id))
+               & (df["ชื่อผู้ดู"].astype(str) == str(viewer_name))]
+        return not m.empty and str(m.iloc[0].get("สถานะ", "")) != "ปิด"
+    except Exception:
+        return False        # อ่านชีตไม่ได้ = ไม่คืนสิทธิ์ (ปลอดภัยไว้ก่อน แค่ต้องกรอกรหัสใหม่)
+
+
 def restore_session():
     """
     คืน login จาก cookie ตอนเปิดแอป (เรียกก่อน render — เฉพาะตอนที่ยังไม่ได้ login)
@@ -523,6 +548,11 @@ def restore_session():
             return                                   # กิจกรรมถูกลบไปแล้ว
         # คนส่งรูปต้องเข้าได้เฉพาะตอนกิจกรรมยังเปิด ; คนดูอัลบั้มดูย้อนหลังได้แม้ปิดแล้ว
         if role == "user" and not gu.is_activity_open(m.iloc[0]):
+            return
+
+        # คนดูอัลบั้ม: เช็คสิทธิ์แชร์ซ้ำทุกครั้ง — ถ้าเจ้าของถอนสิทธิ์ หรือสลับอัลบั้ม
+        # จากสาธารณะเป็น "เฉพาะคน" แล้ว cookie ต้องใช้ไม่ได้ทันที (ไม่ใช่ค้างจนหมดอายุ)
+        if role == "viewer" and not _viewer_still_allowed(aid, str(ident.get("viewer_name", ""))):
             return
 
     elif role == "admin":

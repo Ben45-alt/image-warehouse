@@ -266,9 +266,11 @@ def _photo_grid(page_df: pd.DataFrame, allow_delete: bool, kind: str):
     rows = page_df.to_dict("records")
     for i in range(0, len(rows), COLS_PER_ROW):
         cols = st.columns(COLS_PER_ROW)
-        for col, item in zip(cols, rows[i:i + COLS_PER_ROW]):
+        for j, (col, item) in enumerate(zip(cols, rows[i:i + COLS_PER_ROW])):
             with col:
                 file_id = extract_file_id(item["ลิงก์รูป"])
+                # ใส่ลำดับแถวในคีย์ปุ่ม: file_id เป็น "" ได้ถ้าลิงก์เสีย → 2 ใบขึ้นไปคีย์ชนกัน หน้าล่ม
+                uid = f"{i + j}_{file_id}"
                 # โหลด bytes รูปจริงมาแสดง (ชัวร์กว่า URL thumbnail ที่บางทีไม่ขึ้น)
                 try:
                     st.image(get_image_bytes(file_id), width="stretch")
@@ -289,16 +291,17 @@ def _photo_grid(page_df: pd.DataFrame, allow_delete: bool, kind: str):
                 st.link_button("⬇️ ดาวน์โหลดรูปนี้", download_url, width="stretch")
 
                 if allow_delete:
-                    _delete_button(item, file_id)
+                    _delete_button(item, file_id, uid)
 
 
-def _delete_button(item: dict, file_id: str):
+def _delete_button(item: dict, file_id: str, uid: str = ""):
     """ปุ่มลบรูป → ย้ายไปถังขยะ (กู้คืนได้ ~30 วัน) มีขั้นยืนยันกันกดพลาด"""
-    del_key = f"confirm_del_{file_id}"
+    uid = uid or file_id
+    del_key = f"confirm_del_{uid}"
     if st.session_state.get(del_key):
         st.warning("⚠️ ย้ายรูปนี้ไปถังขยะ? (กู้คืนได้ ~30 วัน — แจ้งผู้ดูแลให้กู้)")
         yes, no = st.columns(2)
-        if yes.button("✅ ย้ายไปถังขยะ", key=f"yes_{file_id}", width="stretch"):
+        if yes.button("✅ ย้ายไปถังขยะ", key=f"yes_{uid}", width="stretch"):
             try:
                 trash_photo(file_id, item["ลิงก์รูป"], deleted_by="คลังทั่วไป")
                 log_action("คลังทั่วไป", "general", "ลบรูป(ถังขยะ)",
@@ -308,10 +311,10 @@ def _delete_button(item: dict, file_id: str):
                 st.rerun()
             except Exception as e:
                 st.error(f"ลบไม่สำเร็จ: {e}")
-        if no.button("❌ ยกเลิก", key=f"no_{file_id}", width="stretch"):
+        if no.button("❌ ยกเลิก", key=f"no_{uid}", width="stretch"):
             st.session_state.pop(del_key, None)
             st.rerun()
     else:
-        if st.button("🗑️ ลบรูปนี้", key=f"del_{file_id}", width="stretch"):
+        if st.button("🗑️ ลบรูปนี้", key=f"del_{uid}", width="stretch"):
             st.session_state[del_key] = True
             st.rerun()

@@ -267,9 +267,11 @@ def _render_gallery(username):
     rows = sub.to_dict("records")
     for i in range(0, len(rows), COLS_PER_ROW):
         cols = st.columns(COLS_PER_ROW)
-        for col, item in zip(cols, rows[i:i + COLS_PER_ROW]):
+        for j, (col, item) in enumerate(zip(cols, rows[i:i + COLS_PER_ROW])):
             with col:
                 file_id = extract_file_id(item["ลิงก์รูป"])
+                # ใส่ลำดับแถวในคีย์ด้วย: extract_file_id คืน "" ถ้าลิงก์เสีย → 2 ใบขึ้นไปคีย์ชนกัน แท็บล่ม
+                uid = f"{i + j}_{file_id}"
                 try:
                     st.image(get_image_bytes(file_id), width="stretch")
                 except Exception:
@@ -279,14 +281,14 @@ def _render_gallery(username):
                 download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
                 st.link_button("⬇️ ดาวน์โหลด", download_url, width="stretch")
 
-                render_publish_toggle(item, "adm", username, "admin")
+                render_publish_toggle(item, f"adm{uid}", username, "admin")
 
                 # ลบรูป → ย้ายไปถังขยะ (กู้คืนได้ ~30 วัน) มีขั้นยืนยัน
-                del_key = f"adm_confirm_del_{file_id}"
+                del_key = f"adm_confirm_del_{uid}"
                 if st.session_state.get(del_key):
                     st.warning("⚠️ ย้ายรูปนี้ไปถังขยะ? (กู้คืนได้ที่แท็บถังขยะ ~30 วัน)")
                     y, no = st.columns(2)
-                    if y.button("✅ ย้ายไปถังขยะ", key=f"adm_yes_{file_id}", width="stretch"):
+                    if y.button("✅ ย้ายไปถังขยะ", key=f"adm_yes_{uid}", width="stretch"):
                         try:
                             trash_photo(file_id, item["ลิงก์รูป"], deleted_by=username)
                             log_action(username, "admin", "ลบรูป(ถังขยะ)",
@@ -297,11 +299,11 @@ def _render_gallery(username):
                             st.rerun()
                         except Exception as e:
                             st.error(f"ลบไม่สำเร็จ: {e}")
-                    if no.button("❌ ยกเลิก", key=f"adm_no_{file_id}", width="stretch"):
+                    if no.button("❌ ยกเลิก", key=f"adm_no_{uid}", width="stretch"):
                         st.session_state.pop(del_key, None)
                         st.rerun()
                 else:
-                    if st.button("🗑️ ลบรูปนี้", key=f"adm_del_{file_id}", width="stretch"):
+                    if st.button("🗑️ ลบรูปนี้", key=f"adm_del_{uid}", width="stretch"):
                         st.session_state[del_key] = True
                         st.rerun()
 
@@ -334,9 +336,10 @@ def _render_trash(username):
     rows = trash.to_dict("records")
     for i in range(0, len(rows), COLS_PER_ROW):
         cols = st.columns(COLS_PER_ROW)
-        for col, item in zip(cols, rows[i:i + COLS_PER_ROW]):
+        for j, (col, item) in enumerate(zip(cols, rows[i:i + COLS_PER_ROW])):
             with col:
                 file_id = extract_file_id(item["ลิงก์รูป"])
+                uid = f"{i + j}_{file_id}"      # ใส่ลำดับกันคีย์ชนตอนลิงก์เสีย
                 try:
                     st.image(get_image_bytes(file_id), width="stretch")
                 except Exception:
@@ -346,7 +349,7 @@ def _render_trash(username):
                     f"🎯 {act_name} · 🗑️ ลบเมื่อ {item.get('วันที่ลบ','')}  \n"
                     f"โดย {item.get('ลบโดย','')}"
                 )
-                if st.button("♻️ กู้คืนรูปนี้", key=f"adm_restore_{file_id}", width="stretch"):
+                if st.button("♻️ กู้คืนรูปนี้", key=f"adm_restore_{uid}", width="stretch"):
                     try:
                         restore_photo(file_id, item["ลิงก์รูป"])
                         log_action(username, "admin", "กู้คืนรูป",
@@ -528,7 +531,7 @@ def render_duplicate_scan(df, key_prefix, deleted_by, role):
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
                 st.caption(f"{item.get('ชื่อไฟล์','')}  \n👤 {item.get('ผู้ส่ง','')} · {item.get('วันเวลา','')}")
-                if st.button("🗑️ ลบใบนี้", key=f"{key_prefix}_dupdel_{file_id}", width="stretch"):
+                if st.button("🗑️ ลบใบนี้", key=f"{key_prefix}_dupdel_{gi}_{idx}_{file_id}", width="stretch"):
                     try:
                         trash_photo(file_id, item["ลิงก์รูป"], deleted_by=deleted_by)
                         log_action(deleted_by, role, "ลบรูป(ถังขยะ)",

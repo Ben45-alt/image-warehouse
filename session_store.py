@@ -66,28 +66,32 @@ def read_token(token: str):
     """
     ตรวจ token → คืน dict {"role","identity"} ถ้าใช้ได้ / None ถ้าใช้ไม่ได้
     ตีตกเมื่อ: รูปแบบผิด / ลายเซ็นไม่ตรง (โดนแก้) / หมดอายุแล้ว
+
+    ⚠️ ค่าที่รับเข้ามาเป็น cookie ที่ผู้ใช้ "แก้เองได้" → ห้ามให้ error เล็ดลอดออกไปเด็ดขาด
+    (เช่น แก้ cookie ให้มีอักขระไทย: `body.encode("ascii")` โยน UnicodeEncodeError
+     และ `compare_digest` กับ str non-ASCII โยน TypeError — เด้งขึ้นหน้าแรกจนเข้าเว็บไม่ได้
+     จนกว่าจะล้าง cookie เอง) จึงครอบทั้งฟังก์ชัน: อะไรก็ตามที่ผิดปกติ = "ไม่มี login ที่จำไว้"
     """
     try:
         body, sig = str(token).split(".", 1)
-    except (ValueError, AttributeError):
-        return None
 
-    expect = hmac.new(_salt().encode("utf-8"), body.encode("ascii"), hashlib.sha256).hexdigest()
-    # เทียบลายเซ็นแบบกัน timing attack (ทั้งคู่เป็น hex ASCII จึงใช้ compare_digest กับ str ได้ปลอดภัย)
-    if not hmac.compare_digest(sig, expect):
-        return None
+        expect = hmac.new(_salt().encode("utf-8"),
+                          body.encode("ascii"), hashlib.sha256).hexdigest()
+        # เทียบลายเซ็นแบบกัน timing attack (expect เป็น hex ASCII เสมอ ; sig ที่ไม่ใช่ ASCII
+        # จะโยน TypeError ตรงนี้แล้วถูกกลืนด้านล่าง = ตีตกเหมือนลายเซ็นไม่ตรง)
+        if not hmac.compare_digest(sig, expect):
+            return None
 
-    try:
         payload = json.loads(_b64d(body).decode("utf-8"))
+
+        if int(payload.get("exp", 0)) < time.time():
+            return None                      # หมดอายุ
+        if not payload.get("role"):
+            return None
+
+        return {"role": payload["role"], "identity": payload.get("identity") or {}}
     except Exception:
-        return None
-
-    if int(payload.get("exp", 0)) < time.time():
-        return None                      # หมดอายุ
-    if not payload.get("role"):
-        return None
-
-    return {"role": payload["role"], "identity": payload.get("identity") or {}}
+        return None                          # cookie เพี้ยน/ถูกแก้ = ถือว่าไม่ได้จำ login ไว้
 
 
 # ---------------------------------------------------------------------------
