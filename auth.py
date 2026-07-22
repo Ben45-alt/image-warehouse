@@ -81,6 +81,30 @@ def logout():
     st.rerun()
 
 
+# กล่องที่ครอบ "ทั้งหน้า login" ไว้ — ไว้สั่งล้างทิ้งตอนกำลังเข้าระบบ (ดู _clear_login_screen)
+_login_box = None
+
+
+def _clear_login_screen(msg: str = "⏳ กำลังเข้าสู่ระบบ..."):
+    """
+    ล้างหน้า login ออกจากจอ "จริงๆ" แล้วเหลือไว้แค่ข้อความสั้นๆ
+
+    ทำไมต้องมี: Streamlit ไม่ได้ลบหน้าเก่าทิ้งตอน rerun — มันแค่ทำให้จางลงระหว่างโหลดหน้าใหม่
+    ถ้าหน้าใหม่โหลดนาน (อ่าน Google Sheet หลายรอบ) ผู้ใช้จะเห็นหน้า login ค้างอยู่ข้างล่าง
+    รวมถึง "ช่องรหัสที่กรอกไว้" ด้วย — หัวหน้าสั่งว่า "มันไม่ควรโผล่มาให้เห็นเลย" (2026-07-22)
+
+    ⚠️ เคยลองกลบด้วย CSS (บังคับ opacity=1) แล้ว **แย่กว่าเดิม** เพราะกลายเป็นเห็นหน้า login
+       คมกริบแทนที่จะจางๆ → ถอยออกแล้ว ทางที่ถูกคือลบ element ทิ้งแบบนี้
+    """
+    box = globals().get("_login_box")
+    if box is None:
+        return
+    try:
+        box.info(msg)      # แทนที่ทั้งกล่องด้วยข้อความเดียว = ของเดิมหายจาก DOM ทันที
+    except Exception:
+        pass               # ล้างไม่ได้ก็ไม่เป็นไร แค่เห็นหน้าเดิมค้างเหมือนก่อน ไม่ทำให้พัง
+
+
 def _do_login(role: str, identity: dict, remember: bool):
     """ตั้ง session หลัง login ผ่าน + จำลง cookie ถ้าผู้ใช้ติ๊กไว้ (ใช้ร่วมทุกทางเข้า)"""
     st.session_state["role"] = role
@@ -88,9 +112,26 @@ def _do_login(role: str, identity: dict, remember: bool):
     st.session_state["view"] = None
     st.session_state.pop("pending_act", None)
     st.session_state["scroll_top"] = True    # หน้าใหม่ให้เริ่มที่บนสุดเสมอ (ดู scroll_to_top())
+
+    # ⚠️ ไม่เขียน cookie ตรงนี้ — ตัวเขียน cookie เป็น component (iframe) ถ้าเรนเดอร์ตอนนี้
+    # มันจะไปอยู่ "ในกล่องหน้า login" ที่กำลังจะโดนล้างทิ้ง เสี่ยงเขียนไม่ติด = "อยู่ในระบบต่อ" พัง
+    # → ฝากไว้ให้ main() เขียนในรอบถัดไป ซึ่งอยู่นอกกล่องและไม่ถูกล้าง (ดู flush_pending_cookie)
     if remember:
-        session_store.save(role, identity)
+        st.session_state["pending_cookie"] = {"role": role, "identity": identity}
+
+    _clear_login_screen()
     st.rerun()
+
+
+def flush_pending_cookie():
+    """เขียน cookie 'ให้ฉันอยู่ในระบบต่อ' ที่ฝากไว้จากรอบก่อน (เรียกใน main() นอกกล่อง login)"""
+    data = st.session_state.pop("pending_cookie", None)
+    if not data:
+        return
+    try:
+        session_store.save(data["role"], data["identity"])
+    except Exception:
+        pass      # จำไม่ได้ก็แค่ต้อง login ใหม่ ไม่ทำให้แอปพัง
 
 
 def scroll_to_top():
@@ -425,6 +466,7 @@ def _render_open_activities(remember: bool = True) -> bool:
                 "no_code": True,      # มาทางปุ่ม 🌐 = ไม่ได้กรอกรหัส (ใช้เลือกข้อความหน้าถัดไป)
             }
             st.session_state["scroll_top"] = True     # ขั้นถัดไปเริ่มที่บนสุด
+            _clear_login_screen("⏳ กำลังเปิดหน้ากรอกชื่อ...")
             st.rerun()
     return True
 
@@ -497,6 +539,16 @@ def render_landing():
     ผู้ใช้ไม่ต้องเลือกก่อนว่าตัวเองเป็นประเภทไหน แค่ใส่รหัสที่มีอยู่ในมือ
     ระบบเดาให้เอง (identify_code) แล้วพาไปหน้าที่ตรงกับสิทธิ์
     """
+    global _login_box
+    # ครอบ "ทั้งหน้า" ไว้ในกล่องเดียว เพื่อสั่งล้างทิ้งทีเดียวตอนกำลังเข้าระบบ
+    # (ไม่งั้นหน้า login จะค้างอยู่ใต้หน้าใหม่จนกว่าจะโหลดเสร็จ — ดู _clear_login_screen)
+    _login_box = st.empty()
+    with _login_box.container():
+        _render_landing_body()
+
+
+def _render_landing_body():
+    """เนื้อหาจริงของหน้าแรก (ถูกครอบด้วย _login_box จาก render_landing)"""
     # ข้อความ error จาก deep-link (QR รหัสผิด/หมดอายุ)
     err = st.session_state.pop("deeplink_error", None)
     if err:
@@ -541,6 +593,7 @@ def render_landing():
                 "remember": remember,
             }
             st.session_state["scroll_top"] = True     # ขั้นถัดไปเริ่มที่บนสุด
+            _clear_login_screen("⏳ กำลังเปิดหน้ากรอกชื่อ...")
             st.rerun()
         elif kind == "viewer":
             aid = str(data.get("activity_id"))

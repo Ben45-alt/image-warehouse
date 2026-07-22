@@ -30,41 +30,10 @@ st.set_page_config(
     layout="wide",
 )
 
-
-def _inject_css():
-    """
-    ตัด "เงา" ที่ผู้ใช้บ่นว่าดูไม่โปร (2026-07-22)
-
-    ต้นเหตุ: ทุกครั้งที่ Streamlit ประมวลผลใหม่ (rerun) มันจะทำเนื้อหาเดิม "จางลง"
-    เพื่อบอกว่ากำลังโหลด — เรียกว่า stale element (ใส่ `data-stale="true"` แล้วลด opacity)
-    ยิ่งอ่าน Google Sheet หลายรอบ (ตอน login) ยิ่งจางค้างนานจนดูเหมือนหน้าเสีย
-
-    แก้: บังคับ opacity = 1 ทุกกรณี → เนื้อหาคมตลอด ไม่วูบ
-    ผู้ใช้ยังรู้ว่าระบบทำงานอยู่จาก "ตัวบอกสถานะมุมขวาบน" ของ Streamlit เอง (ไม่ได้ซ่อน)
-
-    เขียนเผื่อชื่อ selector หลายเวอร์ชัน เพราะ Streamlit เปลี่ยน DOM บ่อย
-    ถ้าวันหน้าชื่อเปลี่ยนอีก อย่างมากคือ CSS ไม่มีผล (เงากลับมา) — ไม่ทำให้แอปพัง
-    """
-    st.markdown(
-        """
-        <style>
-          [data-stale="true"],
-          [data-stale="true"] *,
-          .element-container[data-stale="true"],
-          [data-testid="stElementContainer"][data-stale="true"],
-          .stale-element {
-              opacity: 1 !important;
-              filter: none !important;
-          }
-          /* บางเวอร์ชันค่อยๆ จางด้วย transition — ตัดทิ้งด้วย ไม่งั้นยังเห็นวูบ */
-          [data-stale] { transition: none !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-_inject_css()
+# ℹ️ เคยมี _inject_css() บังคับ opacity ของ element ที่ Streamlit ทำจาง (data-stale)
+#    ถอยออกแล้ว 2026-07-22: การจางคือ "อาการ" ไม่ใช่โรค — บังคับให้ทึบกลายเป็นเห็น
+#    หน้า login เต็มๆ คมกริบซ้อนใต้หน้าใหม่ (รวมช่องรหัสที่กรอกค้าง) แย่กว่าเดิม
+#    วิธีที่ใช้แทน: ล้าง element ของหน้า login ทิ้งจริงตอนกดเข้าระบบ (auth._clear_login_screen)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +75,8 @@ def main():
     auth.ensure_session()
     auth.handle_deeplink()   # อ่าน QR deep-link (?viewcode/?actcode) พาเข้าอัตโนมัติ
     auth.restore_session()   # ไม่ได้มาจาก QR → ลองคืน login ที่ "จำฉันไว้" จาก cookie
-    auth.scroll_to_top()     # เพิ่ง login มา → เด้งขึ้นบนสุด (ทำครั้งเดียว)
+    auth.flush_pending_cookie()   # เขียน cookie "อยู่ในระบบต่อ" ที่ฝากไว้ตอน login (นอกกล่องหน้า login)
+    auth.scroll_to_top()          # เพิ่ง login มา → เด้งขึ้นบนสุด (ทำครั้งเดียว)
     role = st.session_state.get("role")
     ident = st.session_state.get("identity", {})
 
