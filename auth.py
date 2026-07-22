@@ -188,10 +188,10 @@ def _render_name_step():
 
 
 def _login_staff():
-    """admin หรือ superuser — username + password"""
+    """admin หรือ superuser — อีเมล (หรือ username เดิม) + password"""
     import google_utils as gu
     with st.form("login_staff"):
-        u = st.text_input("ชื่อผู้ใช้ (username)")
+        u = st.text_input("อีเมล", placeholder="อีเมลที่ใช้สมัคร")
         p = st.text_input("รหัสผ่าน", type="password")
         remember = st.checkbox(f"จำฉันไว้ {REMEMBER_LABEL} ในเครื่องนี้", value=False,
                                help="อย่าติ๊กถ้าใช้เครื่องกลาง/เครื่องที่คนอื่นใช้ด้วย")
@@ -210,6 +210,13 @@ def _login_staff():
 
     # 2) เช็ค admin จากแท็บ Users (รหัสเก็บเป็น hash)
     acct = gu.find_user(username)
+
+    # ขอเปิดบัญชีไว้แต่ผู้ดูแลยังไม่ได้ตั้งรหัสให้ (hash ว่าง) — บอกตรงๆ จะได้ไม่งงว่าพิมพ์รหัสผิด
+    # ไม่ถือว่าเผยข้อมูล: ใครลองกรอกอีเมลนี้ในแท็บ "ขอเปิดบัญชี" ก็เห็นว่าขอไว้แล้วอยู่ดี
+    if acct and not str(acct.get("password_hash", "")).strip():
+        st.info("⏳ ยังไม่ได้รับรหัส — ผู้ดูแลระบบกำลังตั้งรหัสให้ แล้วจะแจ้งคุณเอง")
+        return
+
     if acct and str(acct.get("role")) == "admin" and verify_secret(p, acct.get("password_hash")):
         # รหัสถูกแล้ว — ค่อยบอกสถานะบัญชีได้ (ถ้าบอกก่อนเช็ครหัส = เผยว่ามี username นี้อยู่จริง)
         status = str(acct.get("สถานะ", "")).strip()
@@ -220,12 +227,14 @@ def _login_staff():
             st.error("🚫 บัญชีนี้ถูกระงับการใช้งาน — ติดต่อผู้ดูแลระบบ")
             return
         _do_login("admin", {
-            "username": username,
+            # ใช้ username ที่เก็บในชีตจริง (ไม่ใช่ที่พิมพ์มา) เพราะทุกอย่างอ้างค่านี้
+            # เช่น "กิจกรรมของฉัน" กรองด้วยคนสร้าง / เปลี่ยนรหัสผ่านของตัวเอง
+            "username": str(acct.get("username", username)),
             "fullname": acct.get("ชื่อ-นามสกุล", ""),
         }, remember)
         return
 
-    st.error("❌ ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
+    st.error("❌ อีเมล/ชื่อผู้ใช้ หรือรหัสผ่านไม่ถูกต้อง")
 
 
 def _forgot_password():
@@ -237,12 +246,12 @@ def _forgot_password():
     import google_utils as gu
     st.caption("ระบบจะแจ้งผู้ดูแลให้ตั้งรหัสใหม่ให้ แล้วแจ้งคุณโดยตรง")
     with st.form("forgot_pw", clear_on_submit=True):
-        u = st.text_input("username ของคุณ")
+        u = st.text_input("อีเมลของคุณ", placeholder="อีเมลที่ใช้เข้าสู่ระบบ")
         ok = st.form_submit_button("ส่งคำขอรีเซ็ตรหัส", width="stretch")
     if not ok:
         return
     if not u.strip():
-        st.error("⚠️ กรอก username ก่อน")
+        st.error("⚠️ กรอกอีเมลก่อน")
         return
     try:
         if gu.request_password_reset(u.strip()):
@@ -281,11 +290,15 @@ def render_change_password_box():
 
 def _signup_admin():
     """
-    สมัครบัญชี admin เอง — บันทึกเป็นสถานะ "รออนุมัติ" ยัง login ไม่ได้
-    จนกว่า superuser จะกดอนุมัติในหน้า "จัดการบัญชี admin"
+    ขอเปิดบัญชี admin — กรอก "อีเมลบริษัท" อย่างเดียว จบ
+
+    🆔 อีเมล = ชื่อผู้ใช้ (ไม่ต้องคิด username ใหม่) ; บัญชีเก่าที่เป็น username สั้นๆ ยังใช้ได้เหมือนเดิม
+    🔑 ไม่ให้ตั้งรหัสเอง — เก็บรหัสว่างไว้ก่อน (`verify_secret` คืน False เสมอถ้า hash ว่าง = login ไม่ได้
+       แม้จะเผลอถูกอนุมัติ) ผู้ดูแลเป็นคนพิมพ์รหัสให้ตอนกดอนุมัติ แล้วบอกเจ้าตัวเอง
+       (โจทย์หัวหน้า: ให้ตั้งเอง เดี๋ยวก็ลืม แล้วต้องมาตามรีเซ็ตให้อยู่ดี)
 
     ⚠️ อีเมลที่กรอกเอง "ไม่ได้พิสูจน์" ว่าเป็นเจ้าของอีเมลจริง (ไม่ได้ส่งเมลยืนยัน)
-    ความปลอดภัยมาจากขั้นที่หัวหน้าดูรายชื่อแล้วกดอนุมัติเฉพาะคนที่รู้จัก
+    ความปลอดภัยมาจากขั้นที่หัวหน้าดูรายชื่อแล้วอนุมัติเฉพาะคนที่รู้จัก
     """
     import google_utils as gu
     import config
@@ -293,44 +306,34 @@ def _signup_admin():
     # โดเมนบริษัท: ตรงอันใดอันหนึ่งก็ผ่าน ; list ว่าง = ไม่บังคับ
     domains = [str(d).strip() for d in getattr(config, "COMPANY_EMAIL_DOMAINS", []) if str(d).strip()]
     st.caption(
-        "กรอกข้อมูลแล้วรอหัวหน้ากดอนุมัติ จึงจะเข้าใช้งานได้"
+        "กรอกอีเมลไว้ แล้วผู้ดูแลจะตั้งรหัสให้แล้วแจ้งคุณเอง"
         + (f" · ต้องใช้อีเมลบริษัท ({' / '.join(domains)})" if domains else "")
     )
     with st.form("signup_admin", clear_on_submit=False):
-        u = st.text_input("username ที่อยากใช้ (ภาษาอังกฤษ/ตัวเลข)")
-        fullname = st.text_input("ชื่อ-นามสกุล")
-        email = st.text_input("อีเมลบริษัท",
+        email = st.text_input("อีเมลบริษัท (ใช้อีเมลนี้เข้าสู่ระบบ)",
                               placeholder=f"yourname{domains[0] if domains else '@company.com'}")
-        p1 = st.text_input("ตั้งรหัสผ่าน", type="password")
-        p2 = st.text_input("ยืนยันรหัสผ่านอีกครั้ง", type="password")
-        ok = st.form_submit_button("ส่งคำขอสมัคร", width="stretch")
+        ok = st.form_submit_button("ขอเปิดบัญชี", width="stretch")
     if not ok:
         return
 
-    username, fullname, email = u.strip(), fullname.strip(), email.strip()
-    if not username or not fullname or not email or not p1:
-        st.error("⚠️ กรอกให้ครบทุกช่อง")
+    email = email.strip()
+    username = email.lower()          # อีเมล = ชื่อผู้ใช้ (เก็บพิมพ์เล็กเสมอ กันพิมพ์ใหญ่เล็กไม่ตรงตอน login)
+    if not email:
+        st.error("⚠️ กรอกอีเมลก่อน")
         return
-    if p1 != p2:
-        st.error("⚠️ รหัสผ่าน 2 ช่องไม่ตรงกัน")
-        return
-    if len(p1) < 6:
-        st.error("⚠️ รหัสผ่านต้องยาวอย่างน้อย 6 ตัว")
+    if "@" not in email:
+        st.error("⚠️ กรอกอีเมลให้ถูกต้อง (ต้องมี @)")
         return
     if domains and not any(email.lower().endswith(d.lower()) for d in domains):
         st.error("⚠️ ต้องใช้อีเมลบริษัทที่ลงท้ายด้วย " + " หรือ ".join(domains) + " เท่านั้น")
         return
-    if gu.find_user(username):
-        st.error(f"❌ username “{username}” มีคนใช้แล้ว — เปลี่ยนชื่ออื่น")
-        return
-    if gu.email_taken(email):
-        st.error("❌ อีเมลนี้เคยสมัครไว้แล้ว — ถ้าลืมรหัส ให้ติดต่อผู้ดูแลระบบ")
+    if gu.find_user(username) or gu.email_taken(email):
+        st.error("❌ อีเมลนี้ขอไว้แล้ว — ถ้ายังไม่ได้รหัส หรือลืมรหัส ให้ทักผู้ดูแลระบบได้เลย")
         return
 
-    gu.add_user(username, hash_secret(p1), fullname,
-                role="admin", status=gu.USER_PENDING, email=email)
-    gu.log_action(username, "guest", "สมัครบัญชี admin", f"{fullname} · {email}")
-    st.success("✅ ส่งคำขอแล้ว — รอหัวหน้าอนุมัติ แล้วค่อยกลับมา login ด้วย username/รหัสที่ตั้งไว้")
+    gu.add_user(username, "", "", role="admin", status=gu.USER_PENDING, email=email)
+    gu.log_action(username, "guest", "ขอเปิดบัญชี admin", email)
+    st.success("✅ ส่งคำขอแล้ว — ผู้ดูแลจะตั้งรหัสให้แล้วแจ้งคุณ จากนั้นเข้าสู่ระบบด้วย **อีเมล + รหัสที่ได้รับ**")
 
 
 def find_share_by_code(code_plain: str):
@@ -483,7 +486,7 @@ def render_landing():
     # admin / ผู้ดูแลระบบ — พับไว้ เพราะคนส่วนใหญ่ไม่ได้ใช้ทางนี้
     with st.expander("🔐 สำหรับ admin / ผู้ดูแลระบบ"):
         tab_in, tab_up, tab_forgot = st.tabs(
-            ["เข้าสู่ระบบ", "สมัครบัญชี admin", "ลืมรหัสผ่าน"])
+            ["เข้าสู่ระบบ", "ขอเปิดบัญชี admin", "ลืมรหัสผ่าน"])
         with tab_in:
             _login_staff()
         with tab_up:

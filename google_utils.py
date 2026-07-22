@@ -860,7 +860,7 @@ def request_password_reset(username) -> bool:
     คืน False ถ้าไม่มี username นี้ (ฝั่งเรียกใช้ยังขึ้นข้อความเหมือนกัน กันเดาว่ามีใครอยู่บ้าง)
     """
     ws = get_users_ws()
-    row = _find_row(ws, username, 1)
+    row = _find_row(ws, resolve_username(username), 1)
     col = _users_col(RESET_REQ_HEADER)
     if not row or row <= 1 or not col:
         return False
@@ -875,7 +875,7 @@ def set_user_password(username, password_hash) -> bool:
     พร้อมล้างธง "ขอรีเซ็ต" ทิ้ง — คำขอถือว่าจัดการแล้ว
     """
     ws = get_users_ws()
-    row = _find_row(ws, username, 1)
+    row = _find_row(ws, resolve_username(username), 1)
     if not row or row <= 1:
         return False
     _retry(lambda: ws.update_cell(row, 2, password_hash))       # คอลัมน์ 2 = password_hash (ตำแหน่งเดิม)
@@ -895,12 +895,34 @@ def reset_requests() -> pd.DataFrame:
 
 
 def find_user(username):
-    """หาบัญชี admin จาก username — คืน dict ของแถวนั้น หรือ None ถ้าไม่เจอ"""
+    """
+    หาบัญชี admin จาก "สิ่งที่ผู้ใช้พิมพ์" — คืน dict ของแถวนั้น หรือ None ถ้าไม่เจอ
+
+    บัญชีที่สมัครใหม่ใช้ "อีเมล" เป็น username อยู่แล้ว แต่รับได้ทั้ง 3 แบบ
+    เพื่อให้บัญชีเก่า (เช่น pim) ยังเข้าได้เหมือนเดิม:
+      1) username ตรงเป๊ะ  2) username ไม่สนตัวพิมพ์  3) ตรงกับคอลัมน์อีเมล
+    """
     df = load_users()
-    if df.empty:
-        return None
-    m = df[df["username"].astype(str) == str(username)]
+    key = str(username).strip()
+    if df.empty or not key:
+        return None      # ค่าว่างต้องไม่ไปแมตช์บัญชีเก่าที่คอลัมน์อีเมลยังว่างอยู่
+    m = df[df["username"].astype(str) == key]
+    if m.empty:
+        low = key.lower()
+        m = df[df["username"].astype(str).str.strip().str.lower() == low]
+        if m.empty and EMAIL_HEADER in df.columns:
+            m = df[df[EMAIL_HEADER].astype(str).str.strip().str.lower() == low]
     return m.iloc[0].to_dict() if not m.empty else None
+
+
+def resolve_username(typed) -> str:
+    """
+    แปลงสิ่งที่ผู้ใช้พิมพ์ (อีเมล/username พิมพ์ใหญ่เล็กไม่ตรง) → username จริงที่เก็บในชีต
+    ต้องเรียกก่อนใช้ฟังก์ชันที่หาแถวจากคอลัมน์ 1 (set_user_password / set_user_status / ...)
+    คืนค่าที่พิมพ์มาเดิมถ้าไม่เจอบัญชี
+    """
+    acct = find_user(typed)
+    return str(acct.get("username")) if acct else str(typed).strip()
 
 
 def email_taken(email: str) -> bool:

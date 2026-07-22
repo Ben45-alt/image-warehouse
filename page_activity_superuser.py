@@ -452,7 +452,7 @@ def _render_admin_accounts():
     # ---- ฟอร์มสร้างบัญชีใหม่ ----
     with st.expander("➕ สร้างบัญชี admin ใหม่ (ตั้งรหัสให้เลย)", expanded=False):
         with st.form("create_admin", clear_on_submit=True):
-            username = st.text_input("username (ชื่อผู้ใช้ login)")
+            username = st.text_input("อีเมล (ใช้อีเมลนี้เข้าสู่ระบบ)")
             fullname = st.text_input("ชื่อ-นามสกุล")
             pw = st.text_input("รหัสผ่าน", type="password")
             ok = st.form_submit_button("สร้างบัญชี", width="stretch")
@@ -515,7 +515,10 @@ def _render_admin_accounts():
 
 def _render_pending_approvals():
     """
-    รายการคนที่สมัคร admin เองแล้ว "รออนุมัติ" — อนุมัติ (เปิดใช้งาน) หรือ ปฏิเสธ (ลบทิ้ง)
+    รายการคนที่ขอเปิดบัญชี admin — "ตั้งรหัสให้ + อนุมัติ" ในปุ่มเดียว หรือ ปฏิเสธ (ลบทิ้ง)
+
+    🔑 คนขอไม่ได้ตั้งรหัสเอง (รหัสในชีตว่าง = login ไม่ได้) → คุณพิมพ์รหัสให้ตรงนี้
+       แล้วบอกเจ้าตัวเอง เช่นใช้รหัสเข้าเครื่องของแผนกที่เขาจำได้อยู่แล้ว
 
     ⚠️ อีเมลในรายการนี้ ระบบ "ไม่ได้ยืนยัน" ว่าเป็นเจ้าของจริง (ไม่ได้ส่งเมลไปเช็ค)
     → อนุมัติเฉพาะคนที่รู้จักตัวจริงเท่านั้น
@@ -525,19 +528,31 @@ def _render_pending_approvals():
         return
 
     su = st.session_state.get("identity", {}).get("username", "superuser")
-    st.warning(f"⏳ มี {len(pend)} คนสมัครเข้ามา รอคุณอนุมัติ")
+    st.warning(f"⏳ มี {len(pend)} คนขอเปิดบัญชี รอคุณตั้งรหัสให้")
     st.caption("อนุมัติเฉพาะคนที่คุณรู้จักตัวจริง — ระบบไม่ได้ส่งเมลยืนยันเจ้าของอีเมล")
     for _, u in pend.iterrows():
         uname = str(u["username"])
-        c1, c2, c3 = st.columns([5, 2, 2])
-        c1.markdown(
-            f"**{uname}** · {u.get('ชื่อ-นามสกุล','')}  \n"
-            f"📧 {u.get(EMAIL_HEADER, '') or '(ไม่ระบุ)'}"
-        )
-        if c2.button("✅ อนุมัติ", key=f"su_approve_{uname}", width="stretch"):
-            set_user_status(uname, USER_ACTIVE)
-            log_action(su, "superuser", "อนุมัติบัญชี admin", uname)
-            st.rerun()
+        # username = อีเมลอยู่แล้วสำหรับบัญชีใหม่ → ไม่ต้องโชว์ซ้ำ 2 บรรทัด
+        mail = str(u.get(EMAIL_HEADER, "") or "")
+        st.markdown(f"📧 **{mail or uname}**")
+
+        with st.form(f"su_approve_form_{uname}", clear_on_submit=True):
+            f1, f2 = st.columns([5, 2])
+            pw = f1.text_input("รหัสที่จะให้เขาใช้", type="password", key=f"su_pw_{uname}",
+                               label_visibility="collapsed", placeholder="พิมพ์รหัสที่จะให้เขาใช้")
+            go = f2.form_submit_button("✅ อนุมัติ", width="stretch")
+        if go:
+            if len(str(pw).strip()) < 4:
+                st.error("⚠️ พิมพ์รหัสที่จะให้เขาใช้ก่อน (อย่างน้อย 4 ตัว)")
+            else:
+                # ตั้งรหัสก่อน ค่อยเปิดใช้งาน — ถ้าตั้งรหัสพลาด บัญชีจะยังเข้าไม่ได้ (ปลอดภัยไว้ก่อน)
+                if set_user_password(uname, auth.hash_secret(pw)):
+                    set_user_status(uname, USER_ACTIVE)
+                    log_action(su, "superuser", "อนุมัติบัญชี admin", uname)
+                    st.success(f"✅ เปิดบัญชี “{uname}” แล้ว — บอกรหัสให้เจ้าตัวได้เลย")
+                    st.rerun()
+                else:
+                    st.error("❌ ตั้งรหัสไม่สำเร็จ — ลองใหม่อีกครั้ง")
 
         # ปฏิเสธ = ลบแถวทิ้ง (ยังไม่เคยใช้งาน ไม่มีข้อมูลผูกอยู่) — มีขั้นยืนยันกันกดพลาด
         rej_key = f"su_confirm_reject_{uname}"
@@ -553,10 +568,10 @@ def _render_pending_approvals():
                 st.session_state.pop(rej_key, None)
                 st.rerun()
         else:
-            if c3.button("🚫 ปฏิเสธ", key=f"su_reject_{uname}", width="stretch"):
+            if st.button("🚫 ปฏิเสธคำขอนี้", key=f"su_reject_{uname}"):
                 st.session_state[rej_key] = True
                 st.rerun()
-    st.divider()
+        st.divider()
 
 
 def _reset_password_form(username, key_prefix):
@@ -593,15 +608,17 @@ def _render_reset_requests():
 
 
 def _create_admin(username, fullname, pw):
-    username = (username or "").strip()
+    """สร้างบัญชีให้เลย (ไม่ต้องรออนุมัติ) — ใช้ "อีเมล" เป็นชื่อผู้ใช้ เหมือนทางสมัครเอง"""
+    username = (username or "").strip().lower()
     fullname = (fullname or "").strip()
     if not username or not pw:
-        st.error("⚠️ กรอก username และรหัสผ่านให้ครบ")
+        st.error("⚠️ กรอกอีเมลและรหัสผ่านให้ครบ")
         return
     if find_user(username):
-        st.error(f"❌ username “{username}” มีอยู่แล้ว — เปลี่ยนชื่อใหม่")
+        st.error(f"❌ “{username}” มีบัญชีอยู่แล้ว")
         return
-    add_user(username, auth.hash_secret(pw), fullname, role="admin", status="ใช้งาน")
+    add_user(username, auth.hash_secret(pw), fullname, role="admin", status="ใช้งาน",
+             email=username if "@" in username else "")
     st.success(f"✅ สร้างบัญชี admin “{username}” แล้ว")
     st.rerun()
 
