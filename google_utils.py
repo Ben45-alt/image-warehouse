@@ -80,8 +80,14 @@ def get_drive_service():
     return build("drive", "v3", credentials=get_credentials())
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def check_connection():
-    """ทดสอบว่าเชื่อม Sheet ได้จริงไหม — คืน (ชื่อชีต, จำนวนแถว)"""
+    """
+    ทดสอบว่าเชื่อม Sheet ได้จริงไหม — คืน (ชื่อชีต, จำนวนแถว)
+
+    cache 5 นาที: ตัวนี้ถูกเรียกใน sidebar ของคลังทั่วไป = ทำงานใหม่ทุก rerun
+    (ทุกครั้งที่กดปุ่ม/พิมพ์) ทั้งที่ชื่อชีตแทบไม่เปลี่ยน → ยิง Google ฟรีๆ ทำให้ "เงา" ค้างนานขึ้น
+    """
     ws = get_worksheet()
     return ws.spreadsheet.title, ws.row_count
 
@@ -295,12 +301,15 @@ def open_activities(df: pd.DataFrame = None, now=None) -> pd.DataFrame:
     return df[mask].copy()
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def load_data() -> pd.DataFrame:
     """
     อ่านข้อมูลทั้งหมดจาก Google Sheet มาเป็นตาราง (DataFrame)
-    ใช้ cache 60 วินาที เพื่อไม่ต้องอ่านชีตใหม่ทุกครั้ง (เร็วขึ้น)
-    หลังอัปโหลดรูปใหม่ โค้ดจะสั่งล้าง cache ให้เอง
+
+    cache 5 นาที (เดิม 1 นาที — ขยายเมื่อ 2026-07-22 เพื่อลด "เงา"/ช่วงรอตอนสลับหน้า)
+    ปลอดภัยเพราะ **ทุกจุดที่แก้ข้อมูลสั่งล้าง cache เองอยู่แล้ว** (อัป/ลบ/กู้คืน/เผยแพร่)
+    และ cache เป็นของทั้งแอป → คนอื่นอัปรูป ทุกคนก็เห็นทันที
+    ที่ค้างได้จริงคือกรณีไปแก้ชีตด้วยมือใน Google Sheets → กดปุ่ม "🔄 รีเฟรชข้อมูล" ได้
     """
     ws = get_worksheet()
     records = ws.get_all_records()  # แปลงแต่ละแถวเป็น dict โดยใช้หัวตารางเป็น key
@@ -623,7 +632,7 @@ def _find_row(ws, value, col: int):
 
 
 # ---------- Activities ----------
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)   # ขยายจาก 60 (2026-07-22) — มุตเตชันล้าง cache เองอยู่แล้ว
 def load_activities() -> pd.DataFrame:
     """อ่านรายการกิจกรรมทั้งหมดเป็น DataFrame (cache 60 วิ)"""
     return pd.DataFrame(get_activities_ws().get_all_records())
@@ -759,7 +768,7 @@ def get_shares_ws():
     return get_spreadsheet().worksheet(SHARES_TAB)
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)   # ขยายจาก 60 (2026-07-22) — เพิ่ม/ถอนสิทธิ์ล้าง cache เองอยู่แล้ว
 def load_shares() -> pd.DataFrame:
     """อ่านรายการแชร์ทั้งหมดเป็น DataFrame (cache 60 วิ)"""
     return pd.DataFrame(get_shares_ws().get_all_records())
@@ -799,7 +808,7 @@ def delete_share(activity_id, viewer_name) -> bool:
 
 
 # ---------- Users (บัญชี admin) ----------
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)   # ขยายจาก 60 (2026-07-22) — add/approve/reset ล้าง cache เองอยู่แล้ว
 def load_users() -> pd.DataFrame:
     """อ่านบัญชี admin ทั้งหมดเป็น DataFrame (cache 60 วิ)"""
     return pd.DataFrame(get_users_ws().get_all_records())

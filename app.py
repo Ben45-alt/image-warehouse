@@ -31,6 +31,42 @@ st.set_page_config(
 )
 
 
+def _inject_css():
+    """
+    ตัด "เงา" ที่ผู้ใช้บ่นว่าดูไม่โปร (2026-07-22)
+
+    ต้นเหตุ: ทุกครั้งที่ Streamlit ประมวลผลใหม่ (rerun) มันจะทำเนื้อหาเดิม "จางลง"
+    เพื่อบอกว่ากำลังโหลด — เรียกว่า stale element (ใส่ `data-stale="true"` แล้วลด opacity)
+    ยิ่งอ่าน Google Sheet หลายรอบ (ตอน login) ยิ่งจางค้างนานจนดูเหมือนหน้าเสีย
+
+    แก้: บังคับ opacity = 1 ทุกกรณี → เนื้อหาคมตลอด ไม่วูบ
+    ผู้ใช้ยังรู้ว่าระบบทำงานอยู่จาก "ตัวบอกสถานะมุมขวาบน" ของ Streamlit เอง (ไม่ได้ซ่อน)
+
+    เขียนเผื่อชื่อ selector หลายเวอร์ชัน เพราะ Streamlit เปลี่ยน DOM บ่อย
+    ถ้าวันหน้าชื่อเปลี่ยนอีก อย่างมากคือ CSS ไม่มีผล (เงากลับมา) — ไม่ทำให้แอปพัง
+    """
+    st.markdown(
+        """
+        <style>
+          [data-stale="true"],
+          [data-stale="true"] *,
+          .element-container[data-stale="true"],
+          [data-testid="stElementContainer"][data-stale="true"],
+          .stale-element {
+              opacity: 1 !important;
+              filter: none !important;
+          }
+          /* บางเวอร์ชันค่อยๆ จางด้วย transition — ตัดทิ้งด้วย ไม่งั้นยังเห็นวูบ */
+          [data-stale] { transition: none !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_inject_css()
+
+
 # ---------------------------------------------------------------------------
 # คลังภาพทั่วไป (ระบบเดิม) — sidebar สถานะ + 3 แท็บ (ส่งรูป/คลังภาพ/Dashboard)
 # ---------------------------------------------------------------------------
