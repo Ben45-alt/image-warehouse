@@ -686,6 +686,11 @@ def _render_log():
                 m = m | f[col].astype(str).str.lower().str.contains(k, na=False)
         f = f[m]
 
+    # กรองแล้วไม่เหลืออะไร → บอกเป็นภาษาไทย (ถ้าวาดตารางเปล่า Streamlit จะขึ้นคำว่า "empty")
+    if f.empty:
+        st.info("ไม่พบรายการที่ตรงกับเงื่อนไข — ลองล้างคำค้นหรือเปลี่ยนตัวกรองดูครับ")
+        return
+
     st.markdown(f"**{len(f)} รายการ** (ใหม่สุดก่อน · โชว์สูงสุด 500)")
     show_cols = [c for c in ["เวลา", "ผู้ทำ", "role", "การกระทำ", "รายละเอียด", "กิจกรรม"] if c in f.columns]
     st.dataframe(f[show_cols].head(500), width="stretch", hide_index=True)

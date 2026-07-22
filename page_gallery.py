@@ -252,7 +252,11 @@ def _zip_button(df: pd.DataFrame, key_prefix: str, filename: str):
 def _paginate(df: pd.DataFrame, key: str) -> pd.DataFrame:
     """แบ่งหน้า — คืนเฉพาะแถวของหน้าที่เลือก"""
     total_pages = max(1, (len(df) + PAGE_SIZE - 1) // PAGE_SIZE)
-    page = st.number_input("หน้า", min_value=1, max_value=total_pages, value=1, step=1, key=key)
+    # บอกช่วงที่พิมพ์ได้ไปเลย — เดิมพิมพ์เกินแล้วได้แค่ขอบแดง ผู้ใช้งงว่าทำไมกด Enter แล้วเงียบ
+    page = st.number_input(
+        f"หน้า (1–{total_pages})", min_value=1, max_value=total_pages, value=1, step=1, key=key,
+        help=f"มีทั้งหมด {total_pages} หน้า — พิมพ์ได้ตั้งแต่ 1 ถึง {total_pages}",
+    )
     start_i = (page - 1) * PAGE_SIZE
     st.caption(f"หน้า {page}/{total_pages}")
     return df.iloc[start_i:start_i + PAGE_SIZE]

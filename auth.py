@@ -15,7 +15,8 @@ import streamlit as st
 
 import session_store
 
-# ข้อความบนช่อง "จำฉันไว้..." — อ้างค่าเดียวกับ session_store จะได้แก้ที่เดียวแล้วตรงกันทุกที่
+# จำนวนวันที่ "อยู่ในระบบต่อ" ได้ — โชว์ใน tooltip ของ checkbox (ไม่โชว์บนป้าย ตามที่หัวหน้าสั่ง
+# 2026-07-22: "ไม่ต้องรู้หรอกกี่วัน") · อ้างค่าเดียวกับ session_store จะได้แก้ที่เดียวแล้วตรงกันทุกที่
 REMEMBER_LABEL = f"{session_store.REMEMBER_DAYS} วัน"
 
 
@@ -168,13 +169,18 @@ def _render_name_step():
     จำเป็นต้องถาม เพราะต้องบันทึกว่าใครเป็นคนส่งรูป (และใช้กรองแท็บ "รูปของฉัน")
     """
     pend = st.session_state["pending_act"]
-    st.success(f"✅ รหัสถูกต้อง — กิจกรรม: **{pend['activity_name']}**")
+    # แยกข้อความตามทางที่เข้ามา: กิจกรรม 🌐 กดปุ่มบนหน้าแรกตรงๆ ไม่เคยกรอกรหัส
+    # ถ้าขึ้น "รหัสถูกต้อง" จะงงว่ารหัสอะไร (เจอตอนเทสต์บนเว็บ 2026-07-22)
+    if pend.get("no_code"):
+        st.info(f"📤 กำลังส่งรูปเข้า: **{pend['activity_name']}**")
+    else:
+        st.success(f"✅ รหัสถูกต้อง — กิจกรรม: **{pend['activity_name']}**")
     with st.form("login_user_name"):
         name = st.text_input("ชื่อของคุณ (ให้รู้ว่าใครส่งรูป)")
         ok = st.form_submit_button("เข้าร่วมกิจกรรม", width="stretch")
-    if st.button("← เปลี่ยนรหัส", key="back_from_name"):
-        st.session_state.pop("pending_act", None)
-        st.rerun()
+    # ไม่มีปุ่มย้อนกลับตรงนี้ (2026-07-22 ตามที่หัวหน้าสั่ง)
+    # เดิมเป็นปุ่ม "← เปลี่ยนรหัส" แต่คนถ่ายรูปอ่านแล้วนึกว่าต้องไปเปลี่ยนรหัสผ่านตัวเอง
+    # ถ้าใส่รหัสผิดกิจกรรม → รีเฟรชหน้า (F5) ก็กลับไปหน้ากรอกรหัสเหมือนเดิม
     if not ok:
         return
     if not name.strip():
@@ -193,8 +199,10 @@ def _login_staff():
     with st.form("login_staff"):
         u = st.text_input("อีเมล", placeholder="อีเมลที่ใช้สมัคร")
         p = st.text_input("รหัสผ่าน", type="password")
-        remember = st.checkbox(f"จำฉันไว้ {REMEMBER_LABEL} ในเครื่องนี้", value=False,
-                               help="อย่าติ๊กถ้าใช้เครื่องกลาง/เครื่องที่คนอื่นใช้ด้วย")
+        # ⚠️ value=False โดยตั้งใจ — บัญชี admin สิทธิ์สูงกว่า ไม่ติ๊กให้อัตโนมัติ
+        remember = st.checkbox("ให้ฉันอยู่ในระบบต่อ", value=False,
+                               help=f"ในเครื่องนี้เท่านั้น · อยู่ได้ {REMEMBER_LABEL} · "
+                                    "อย่าติ๊กถ้าใช้เครื่องกลาง/เครื่องที่คนอื่นใช้ด้วย")
         ok = st.form_submit_button("เข้าสู่ระบบ", width="stretch")
     if not ok:
         return
@@ -352,15 +360,17 @@ def find_share_by_code(code_plain: str):
     return None
 
 
-def _render_open_activities(remember: bool = True):
+def _render_open_activities(remember: bool = True) -> bool:
     """
     ปุ่มกิจกรรมที่ "ใครก็ส่งรูปได้" — กดชื่อแล้วข้ามไปกรอกชื่อตัวเองได้เลย ไม่ต้องมีรหัส
     (แนวคิดจากหัวหน้า: ให้ส่งง่ายเหมือนกลุ่มไลน์ ใครอยู่ก็ส่งๆ ไป)
+
+    คืน True ถ้ามีกิจกรรมให้กด (ฝั่งเรียกใช้เอาไปตัดสินใจว่าจะขีดเส้นคั่นไหม)
     """
     import google_utils as gu  # lazy import กัน circular import
     opens = gu.open_join_activities()
     if opens.empty:
-        return
+        return False
     st.markdown("**📤 ส่งรูปเข้ากิจกรรมที่เปิดให้ทุกคน — กดได้เลย ไม่ต้องใช้รหัส**")
     for _, a in opens.iterrows():
         aid = str(a["activity_id"])
@@ -368,8 +378,10 @@ def _render_open_activities(remember: bool = True):
         if st.button(f"📤 {nm}", key=f"openact_{aid}", width="stretch"):
             st.session_state["pending_act"] = {
                 "activity_id": aid, "activity_name": nm, "remember": remember,
+                "no_code": True,      # มาทางปุ่ม 🌐 = ไม่ได้กรอกรหัส (ใช้เลือกข้อความหน้าถัดไป)
             }
             st.rerun()
+    return True
 
 
 def _render_public_albums():
@@ -452,13 +464,24 @@ def render_landing():
         _render_name_step()
         return
 
+    # 🌐 กิจกรรมที่ "ใครก็ส่งรูปได้" มาก่อนทุกอย่าง (โจทย์หัวหน้า 2026-07-22:
+    # "เอากิจกรรมที่ไม่ต้องใส่รหัส ไปไว้บนสุด อย่ามาปนกับที่ใส่รหัส admin")
+    # ของที่คนใช้บ่อยสุด = พนักงานถ่ายรูปส่งเข้ากิจกรรม จึงควรอยู่บนสุด
+    # ⚠️ เรียกโดยไม่ส่ง remember เพราะ checkbox อยู่ในฟอร์มด้านล่าง (ยังไม่ถูกสร้าง)
+    #    → ใช้ default True ซึ่งตรงกับค่าเริ่มต้นของ checkbox อยู่แล้ว
+    has_open = _render_open_activities()
+    if has_open:
+        st.divider()
+
+    st.markdown("**มีรหัสอยู่แล้ว?**")
     st.caption("ใส่รหัสที่คุณได้รับ — ระบบจะพาไปหน้าที่ตรงกับสิทธิ์ของคุณเอง")
 
     with st.form("login_main"):
         code = st.text_input("รหัสของคุณ", type="password",
                              placeholder="รหัสคลังภาพ / รหัสกิจกรรม / รหัสดูอัลบั้ม")
-        remember = st.checkbox(f"จำฉันไว้ {REMEMBER_LABEL} ในเครื่องนี้", value=True,
-                               help="อย่าติ๊กถ้าใช้เครื่องกลาง/เครื่องที่คนอื่นใช้ด้วย")
+        remember = st.checkbox("ให้ฉันอยู่ในระบบต่อ", value=True,
+                               help=f"ในเครื่องนี้เท่านั้น · อยู่ได้ {REMEMBER_LABEL} · "
+                                    "อย่าติ๊กถ้าใช้เครื่องกลาง/เครื่องที่คนอื่นใช้ด้วย")
         ok = st.form_submit_button("เข้าใช้งาน", width="stretch")
 
     if ok:
@@ -483,7 +506,6 @@ def render_landing():
             st.error("❌ รหัสไม่ถูกต้อง หรือหมดอายุแล้ว")
 
     st.divider()
-    _render_open_activities(remember)
     _render_public_albums()
 
     # admin / ผู้ดูแลระบบ — พับไว้ เพราะคนส่วนใหญ่ไม่ได้ใช้ทางนี้
