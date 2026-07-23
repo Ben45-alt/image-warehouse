@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 import gspread
+from gspread.exceptions import APIError   # error จาก Google API (429 โควตา/500 ล่ม ฯลฯ)
 import pandas as pd
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -34,11 +35,28 @@ SCOPES = [
 ]
 
 
+# HTTP status จาก Google ที่ถือว่า "ชั่วคราว ลองใหม่แล้วน่าจะหาย":
+#   429 = ยิงถี่เกินโควตา/นาที (rate limit) · 500/502/503/504 = ฝั่ง Google ล่มชั่วคราว
+# ส่วน 400/401/403/404 = ปัญหาจริง (สิทธิ์/ชีตหาย/ขอผิด) ลองใหม่ก็ไม่หาย → โยนออกเลย
+_RETRYABLE_HTTP = {429, 500, 502, 503, 504}
+
+
+def _is_retryable_api_error(e) -> bool:
+    """APIError จาก Google ที่ควรลองใหม่ (โควตาเกินชั่วคราว / เซิร์ฟเวอร์ Google สะอึก)"""
+    if not isinstance(e, APIError):
+        return False
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    return code in _RETRYABLE_HTTP
+
+
 def _retry(fn, *args, attempts: int = 4, **kwargs):
     """
-    เรียกฟังก์ชันที่ต้องต่อเน็ต แล้วลองใหม่อัตโนมัติถ้าเน็ตสะดุดชั่วคราว
-    (เช่น WinError 10053/10054 ที่ antivirus/firewall หรือเน็ตตัดการเชื่อมต่อกลางคัน)
+    เรียกฟังก์ชันที่ต้องต่อเน็ต แล้วลองใหม่อัตโนมัติถ้าสะดุดชั่วคราว:
+    - เน็ตสะดุด (WinError 10053/10054 ที่ antivirus/firewall หรือเน็ตตัดกลางคัน)
+    - APIError ชั่วคราวจาก Google (429 โควตาเกิน / 500-504 ฝั่ง Google ล่ม)
     ลองสูงสุด `attempts` ครั้ง เว้นช่วงถี่ขึ้นเรื่อยๆ ถ้ายังไม่ได้ค่อยโยน error จริงออกไป
+
+    ⚠️ APIError ที่ "ไม่ใช่ชั่วคราว" (403 สิทธิ์/404 ชีตหาย) โยนทันที ไม่เสียเวลาลองซ้ำ
     """
     last_err = None
     for i in range(attempts):
@@ -48,6 +66,11 @@ def _retry(fn, *args, attempts: int = 4, **kwargs):
             # ConnectionError ครอบคลุม ConnectionAbortedError/ResetError (WinError 10053/10054)
             last_err = e
             time.sleep(1.5 * (i + 1))  # 1.5s, 3s, 4.5s ...
+        except APIError as e:
+            if not _is_retryable_api_error(e):
+                raise                  # error จริง → ไม่ต้องลองซ้ำ
+            last_err = e
+            time.sleep(1.5 * (i + 1))
     raise last_err
 
 
@@ -89,7 +112,7 @@ def check_connection():
     (ทุกครั้งที่กดปุ่ม/พิมพ์) ทั้งที่ชื่อชีตแทบไม่เปลี่ยน → ยิง Google ฟรีๆ ทำให้ "เงา" ค้างนานขึ้น
     """
     ws = get_worksheet()
-    return ws.spreadsheet.title, ws.row_count
+    return _retry(lambda: (ws.spreadsheet.title, ws.row_count))
 
 
 def upload_to_drive(file_buffer, filename: str):
@@ -243,7 +266,7 @@ def load_log() -> pd.DataFrame:
     """อ่านบันทึกการใช้งานทั้งหมดจากแท็บ Log เป็น DataFrame (cache 30 วิ) — คืนว่างถ้ายังไม่มีแท็บ"""
     try:
         ws = get_spreadsheet().worksheet(LOG_TAB)
-        return pd.DataFrame(ws.get_all_records())
+        return pd.DataFrame(_retry(lambda: ws.get_all_records()))
     except Exception:
         return pd.DataFrame()
 
@@ -312,7 +335,7 @@ def load_data() -> pd.DataFrame:
     ที่ค้างได้จริงคือกรณีไปแก้ชีตด้วยมือใน Google Sheets → กดปุ่ม "🔄 รีเฟรชข้อมูล" ได้
     """
     ws = get_worksheet()
-    records = ws.get_all_records()  # แปลงแต่ละแถวเป็น dict โดยใช้หัวตารางเป็น key
+    records = _retry(lambda: ws.get_all_records())  # แปลงแต่ละแถวเป็น dict โดยใช้หัวตารางเป็น key
     return pd.DataFrame(records)
 
 
@@ -647,7 +670,7 @@ def _find_row(ws, value, col: int):
 @st.cache_data(ttl=180)   # ขยายจาก 60 (2026-07-22) — มุตเตชันล้าง cache เองอยู่แล้ว
 def load_activities() -> pd.DataFrame:
     """อ่านรายการกิจกรรมทั้งหมดเป็น DataFrame (cache 60 วิ)"""
-    return pd.DataFrame(get_activities_ws().get_all_records())
+    return pd.DataFrame(_retry(lambda: get_activities_ws().get_all_records()))
 
 
 def add_activity(activity_id, name, code_hash, creator, created_date, status="เปิด",
@@ -783,7 +806,7 @@ def get_shares_ws():
 @st.cache_data(ttl=180)   # ขยายจาก 60 (2026-07-22) — เพิ่ม/ถอนสิทธิ์ล้าง cache เองอยู่แล้ว
 def load_shares() -> pd.DataFrame:
     """อ่านรายการแชร์ทั้งหมดเป็น DataFrame (cache 60 วิ)"""
-    return pd.DataFrame(get_shares_ws().get_all_records())
+    return pd.DataFrame(_retry(lambda: get_shares_ws().get_all_records()))
 
 
 def add_share(activity_id, viewer_name, code_hash, when) -> None:
@@ -823,7 +846,7 @@ def delete_share(activity_id, viewer_name) -> bool:
 @st.cache_data(ttl=180)   # ขยายจาก 60 (2026-07-22) — add/approve/reset ล้าง cache เองอยู่แล้ว
 def load_users() -> pd.DataFrame:
     """อ่านบัญชี admin ทั้งหมดเป็น DataFrame (cache 60 วิ)"""
-    return pd.DataFrame(get_users_ws().get_all_records())
+    return pd.DataFrame(_retry(lambda: get_users_ws().get_all_records()))
 
 
 def add_user(username, password_hash, fullname, role="admin", status=USER_ACTIVE, email=""):

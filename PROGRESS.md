@@ -165,6 +165,18 @@ page_activity_superuser.py:474
 > - 🧪 เทสต์ในเครื่องผ่าน 9/9 (crop รูปแนวตั้ง/แนวนอน/จัตุรัส → 400×300 เท่ากันหมด · bytes เสียคืนของเดิมไม่ throw · ทุกโมดูล import ผ่าน · cookie mgr memoize ถูก)
 > - ⏳ **รอเทสต์บนเว็บ:** login → **ไม่มี error เหลืองแวบ** + ติ๊ก "อยู่ในระบบต่อ" → refresh ไม่หลุด (#G) · คลังภาพ → รูปสูงเท่ากันเรียงเป็นตาราง · QR ยังสแกนได้ · ดาวน์โหลดได้ไฟล์เต็ม (#H)
 
+### ✅ #I เว็บ crash เต็มจอตอนโหลดข้อมูล = `APIError` จาก Google Sheets (2026-07-23)
+
+- **อาการ (หัวหน้าเจอตอนใช้ "เช็ครูปซ้ำ"):** จอแดง traceback เต็มหน้า `raise APIError(response)` — ต้นทาง `_render_dashboard()` → `load_activities()` → `get_all_records()` (Google Sheets API)
+- **ต้นเหตุ (ความเปราะเดิม ไม่เกี่ยวกับ #G/#H — คนละ API, Sheets ≠ Drive):**
+  - `_retry` เดิมจับแค่ `ConnectionError`/`TimeoutError` — **ไม่จับ `APIError`** (429 โควตาเกิน/นาที · 500-504 ฝั่ง Google ล่มชั่วคราว)
+  - **read ทั้ง 6 ตัว** (`check_connection`/`load_log`/`load_data`/`load_activities`/`load_shares`/`load_users`) ยิง `get_all_records()` **โดยไม่ผ่าน `_retry` เลย** → เจอ blip ชั่วคราวปุ๊บเด้งเต็มจอ (write ทุกตัวมี `_retry` อยู่แล้ว แต่ read ตกหล่น)
+- **✅ แก้แล้ว:**
+  1. `_retry` จับ `APIError` ที่ status ∈ {429,500,502,503,504} → backoff 1.5/3/4.5s แล้วลองใหม่ (สูงสุด 4 ครั้ง) · **403 สิทธิ์/404 ชีตหาย = โยนทันที ไม่เสียเวลาลองซ้ำ**
+  2. ครอบ read ทั้ง 6 ตัวด้วย `_retry`
+- 🧪 เทสต์ในเครื่องผ่าน 13/13 (429/503 retry สำเร็จ · 403/404 โยนทันที · ConnectionError เดิมไม่พัง · แยก retryable ถูก)
+- ℹ️ **ถ้ายังเจอซ้ำหลัง deploy** = โควตาเกินแบบต่อเนื่อง (ยิงถี่จริงๆ) หรือ 403 สิทธิ์ — **ขอ traceback บรรทัดสุดท้าย (โค้ด APIError) มาดู** จะได้แก้ตรงจุด (ลดจำนวนอ่าน / เช็คสิทธิ์)
+
 ### 🟠 #G error แวบตอน login = `CachedWidgetWarning` — `session_store.py:111 _get_manager()`
 
 - **อาการ (หัวหน้าเจอ 2026-07-23 เช้า):** ตอน login มีกล่อง error สีเหลืองขึ้นมา **แวบเดียวแล้วหายเอง**
