@@ -165,7 +165,7 @@ page_activity_superuser.py:474
 > - 🧪 เทสต์ในเครื่องผ่าน 9/9 (crop รูปแนวตั้ง/แนวนอน/จัตุรัส → 400×300 เท่ากันหมด · bytes เสียคืนของเดิมไม่ throw · ทุกโมดูล import ผ่าน · cookie mgr memoize ถูก)
 > - ⏳ **รอเทสต์บนเว็บ:** login → **ไม่มี error เหลืองแวบ** + ติ๊ก "อยู่ในระบบต่อ" → refresh ไม่หลุด (#G) · คลังภาพ → รูปสูงเท่ากันเรียงเป็นตาราง · QR ยังสแกนได้ · ดาวน์โหลดได้ไฟล์เต็ม (#H)
 
-### ✅ #I เว็บ crash เต็มจอตอนโหลดข้อมูล = `APIError` จาก Google Sheets (2026-07-23)
+### ✅ #I เว็บ crash เต็มจอตอนโหลดข้อมูล = `APIError` จาก Google Sheets (2026-07-23) — commit `15834a2`
 
 - **อาการ (หัวหน้าเจอตอนใช้ "เช็ครูปซ้ำ"):** จอแดง traceback เต็มหน้า `raise APIError(response)` — ต้นทาง `_render_dashboard()` → `load_activities()` → `get_all_records()` (Google Sheets API)
 - **ต้นเหตุ (ความเปราะเดิม ไม่เกี่ยวกับ #G/#H — คนละ API, Sheets ≠ Drive):**
