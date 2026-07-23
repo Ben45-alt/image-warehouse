@@ -154,6 +154,7 @@ def append_row(row_values: list):
     """บันทึกข้อมูล 1 แถวต่อท้าย Google Sheet (ลองใหม่อัตโนมัติถ้าเน็ตสะดุด)"""
     ws = get_worksheet()
     _retry(lambda: ws.append_row(row_values, value_input_option="USER_ENTERED"))
+    load_data.clear()   # ล้าง cache เอง (เหมือน delete/trash/restore) → ผู้เรียกไม่ต้อง st.cache_data.clear() เหมารวม
 
 
 def append_activity_row(datetime_str, sender, link, filename, activity_id, phash=""):

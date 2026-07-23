@@ -311,7 +311,7 @@ def _delete_button(item: dict, file_id: str, uid: str = ""):
                 log_action("คลังทั่วไป", "general", "ลบรูป(ถังขยะ)",
                            detail=str(item.get("ชื่อไฟล์", "")))
                 st.session_state.pop(del_key, None)
-                st.cache_data.clear()  # ล้าง cache ให้รายการหายทันที
+                # trash_photo ล้าง load_data, log_action ล้าง load_log อยู่แล้ว
                 st.rerun()
             except Exception as e:
                 st.error(f"ลบไม่สำเร็จ: {e}")

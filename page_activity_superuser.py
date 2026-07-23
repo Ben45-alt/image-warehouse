@@ -259,7 +259,7 @@ def _render_manage_activities():
                     log_action(su, "superuser", "ลบกิจกรรมถาวร",
                                detail=f"{a['ชื่อกิจกรรม']} (รูป {removed} ใบ)", activity_id=aid)
                     st.session_state.pop(del_key, None)
-                    st.cache_data.clear()
+                    # delete_activity ล้าง load_data+load_activities, log_action ล้าง load_log อยู่แล้ว
                     st.rerun()
                 except Exception as e:
                     st.error(f"ลบไม่สำเร็จ: {e}")
@@ -360,7 +360,7 @@ def _render_all_gallery():
                                        detail=str(item.get("ชื่อไฟล์", "")),
                                        activity_id=str(item.get("activity_id", "")))
                             st.session_state.pop(del_key, None)
-                            st.cache_data.clear()
+                            # trash_photo ล้าง load_data, log_action ล้าง load_log อยู่แล้ว
                             st.rerun()
                         except Exception as e:
                             st.error(f"ลบไม่สำเร็จ: {e}")
@@ -421,7 +421,7 @@ def _render_trash():
                         restore_photo(file_id, item["ลิงก์รูป"])
                         log_action(su, "superuser", "กู้คืนรูป",
                                    detail=str(item.get("ชื่อไฟล์", "")), activity_id=aid)
-                        st.cache_data.clear()
+                        # restore_photo ล้าง load_data, log_action ล้าง load_log อยู่แล้ว
                         st.rerun()
                     except Exception as e:
                         st.error(f"กู้คืนไม่สำเร็จ: {e}")
@@ -434,7 +434,7 @@ def _render_trash():
                             log_action(su, "superuser", "ลบรูปถาวร",
                                        detail=str(item.get("ชื่อไฟล์", "")), activity_id=aid)
                             st.session_state.pop(purge_key, None)
-                            st.cache_data.clear()
+                            # delete_photo ล้าง load_data, log_action ล้าง load_log อยู่แล้ว
                             st.rerun()
                         except Exception as e:
                             st.error(f"ลบไม่สำเร็จ: {e}")

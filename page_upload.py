@@ -36,7 +36,7 @@ def _upload_batch(department, category, title, tags, sender, items) -> int:
         ok += 1
         prog.progress((i + 1) / total, text=f"อัปโหลด {i + 1}/{total}")
     prog.empty()
-    st.cache_data.clear()
+    # append_row ล้าง load_data, log_action ล้าง load_log อยู่แล้ว
     return ok
 
 

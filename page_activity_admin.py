@@ -167,7 +167,7 @@ def _render_activities(username):
                             log_action(username, "admin", "ลบกิจกรรม",
                                        detail=str(a["ชื่อกิจกรรม"]), activity_id=aid)
                             st.session_state.pop(del_key, None)
-                            st.cache_data.clear()
+                            # delete_activity ล้าง load_data+load_activities, log_action ล้าง load_log อยู่แล้ว
                             st.rerun()
                     except Exception as e:
                         st.error(f"ลบไม่สำเร็จ: {e}")
@@ -295,7 +295,7 @@ def _render_gallery(username):
                                        detail=str(item.get("ชื่อไฟล์", "")),
                                        activity_id=str(item.get("activity_id", "")))
                             st.session_state.pop(del_key, None)
-                            st.cache_data.clear()
+                            # trash_photo ล้าง load_data, log_action ล้าง load_log อยู่แล้ว
                             st.rerun()
                         except Exception as e:
                             st.error(f"ลบไม่สำเร็จ: {e}")
@@ -355,7 +355,7 @@ def _render_trash(username):
                         log_action(username, "admin", "กู้คืนรูป",
                                    detail=str(item.get("ชื่อไฟล์", "")),
                                    activity_id=str(item.get("activity_id", "")))
-                        st.cache_data.clear()
+                        # restore_photo ล้าง load_data, log_action ล้าง load_log อยู่แล้ว
                         st.rerun()
                     except Exception as e:
                         st.error(f"กู้คืนไม่สำเร็จ: {e}")
@@ -495,7 +495,7 @@ def render_publish_toggle(item, key_prefix, who, role):
             set_photo_published(link, not published)
             log_action(who, role, "ยกเลิกเผยแพร่รูป" if published else "เผยแพร่รูป",
                        detail=str(item.get("ชื่อไฟล์", "")), activity_id=aid)
-            st.cache_data.clear()
+            # set_photo_published ล้าง load_data, log_action ล้าง load_log อยู่แล้ว
             st.rerun()
         except Exception as e:
             st.error(f"ทำรายการไม่สำเร็จ: {e}")
@@ -537,7 +537,7 @@ def render_duplicate_scan(df, key_prefix, deleted_by, role):
                         log_action(deleted_by, role, "ลบรูป(ถังขยะ)",
                                    detail=str(item.get("ชื่อไฟล์", "")),
                                    activity_id=str(item.get("activity_id", "")))
-                        st.cache_data.clear()
+                        # trash_photo ล้าง load_data, log_action ล้าง load_log อยู่แล้ว
                         st.rerun()
                     except Exception as e:
                         st.error(f"ลบไม่สำเร็จ: {e}")
