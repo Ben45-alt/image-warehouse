@@ -158,6 +158,58 @@ page_activity_superuser.py:474
 > - **#B** Log กรองแล้วไม่เหลือ → `st.info("ไม่พบรายการที่ตรงกับเงื่อนไข — ลองล้างคำค้นหรือเปลี่ยนตัวกรองดูครับ")` แทนตารางเปล่าที่ขึ้นคำว่า `empty`
 > - **#C** ช่องเลขหน้าเปลี่ยนป้ายเป็น `หน้า (1–N)` + `help="มีทั้งหมด N หน้า — พิมพ์ได้ตั้งแต่ 1 ถึง N"`
 > - **#D (เงา)** ✅ **แก้แล้ว** ทำทั้งทาง ก + ข (ดูหัวข้อ "👻 ตัดเงาระหว่างโหลด" ด้านบน)
+>
+> ### ✅ งานใหม่ (เจอเช้า 2026-07-23) — #G #H · CLI แก้แล้ว รอเทสต์บนเว็บ
+> - **#G** ✅ แก้แล้ว — เลิกใช้ `@st.cache_resource` ครอบ CookieManager เปลี่ยนเป็น memoize ผ่าน `st.session_state` (ไม่โดน `CachedWidgetWarning` แล้ว กันสร้างซ้ำได้เหมือนเดิม)
+> - **#H** ✅ แก้แล้ว — เลือกทาง (2) crop ตอนทำ thumbnail: เพิ่ม `image_utils.crop_to_box()` (center-crop ด้วย `ImageOps.fit`) + `google_utils.get_thumbnail()` แล้วกริดทั้ง 8 จุดเรียก `get_thumbnail()` แทน `get_image_bytes()` · **ปุ่มดาวน์โหลดยังได้ไฟล์เต็ม (ใช้ URL Drive ตรง) · QR + พรีวิว 3 จุดไม่โดนแตะ**
+> - 🧪 เทสต์ในเครื่องผ่าน 9/9 (crop รูปแนวตั้ง/แนวนอน/จัตุรัส → 400×300 เท่ากันหมด · bytes เสียคืนของเดิมไม่ throw · ทุกโมดูล import ผ่าน · cookie mgr memoize ถูก)
+> - ⏳ **รอเทสต์บนเว็บ:** login → **ไม่มี error เหลืองแวบ** + ติ๊ก "อยู่ในระบบต่อ" → refresh ไม่หลุด (#G) · คลังภาพ → รูปสูงเท่ากันเรียงเป็นตาราง · QR ยังสแกนได้ · ดาวน์โหลดได้ไฟล์เต็ม (#H)
+
+### 🟠 #G error แวบตอน login = `CachedWidgetWarning` — `session_store.py:111 _get_manager()`
+
+- **อาการ (หัวหน้าเจอ 2026-07-23 เช้า):** ตอน login มีกล่อง error สีเหลืองขึ้นมา **แวบเดียวแล้วหายเอง**
+- **ข้อความจริง (จากภาพหน้าจอ):** *"Your script uses a widget command in a cached function (function decorated with st.cache_data or st.cache_resource). This code will only be called when we detect a cache 'miss', which can lead to unexpected results."* · traceback ชี้ `CookieManager.__init__` → `components/v1/custom_component` → `caching/cache_utils.py _handle_cache_miss`
+- **ต้นเหตุ:** `_get_manager()` เอา `@st.cache_resource` ครอบการสร้าง `stx.CookieManager` (เป็น widget/component) — Streamlit ห้ามสร้าง widget ในฟังก์ชันที่ถูก cache
+  ```python
+  # session_store.py:111-113
+  @st.cache_resource(show_spinner=False)
+  def _get_manager():
+      import extra_streamlit_components as stx
+      return stx.CookieManager(key=_COOKIE_KEY)      # ← widget ใน cached fn = ต้นเหตุ warning
+  ```
+- **ทำไมแวบเดียวแล้วหาย:** warning ขึ้นเฉพาะตอน **cache miss** (สร้าง manager ครั้งแรก) · พอ cache ติดแล้วรอบถัดไปไม่เรียกซ้ำ → warning หาย · ตรงกับข้อความ Streamlit เป๊ะ
+- **⚠️ ที่ต้องระวัง:** เดิมใส่ `@st.cache_resource` เพื่อ**กันสร้าง CookieManager ซ้ำจน key ชน** — ถ้าเอา decorator ออกเฉยๆ อาจเจอ `DuplicateWidgetID` แทน
+- **แนวทางแก้ (ให้ CLI เลือก):**
+  1. memoize ผ่าน `st.session_state` แทน cache (ไม่ใช่ cache → ไม่โดน warning และยังกันซ้ำได้):
+     ```python
+     def _get_manager():
+         if "_cookie_mgr" not in st.session_state:
+             import extra_streamlit_components as stx
+             st.session_state["_cookie_mgr"] = stx.CookieManager(key=_COOKIE_KEY)
+         return st.session_state["_cookie_mgr"]
+     ```
+  2. หรือคงไว้แต่เรียก manager เฉพาะตอน save/clear cookie — เพราะ `load()` ใช้ `st.context.cookies` อ่านตรงอยู่แล้ว ไม่ต้องพึ่ง manager
+- **🧪 เทสต์หลังแก้:** login → ไม่มี error เหลือง · ติ๊ก "ให้ฉันอยู่ในระบบต่อ" → refresh → ไม่หลุด (cookie ยังเขียน/อ่านได้)
+- ℹ️ ความร้ายแรง: **ต่ำ (แค่ warning ไม่พัง)** แต่หัวหน้าเห็นแล้วตกใจ ควรเก็บให้เรียบร้อย
+
+### 🟠 #H รูปในคลังภาพขนาดไม่เท่ากัน อยากให้เท่ากันหมด — ทุกหน้าที่โชว์กริดรูป
+
+- **โจทย์จากหัวหน้า (2026-07-23):** *"ดูรูปทั้งหมดแล้วรูปมันไม่เท่ากัน อยากแก้ให้รูปดูขนาดเท่ากัน แบบรูปที่ 3"* (รูปที่ 3 = แนวนอนพอดีกรอบ · ที่ไม่เท่าคือรูปแนวตั้งสูงกว่าเพื่อน แถวเลยเหลื่อม)
+- **ต้นเหตุ:** ทุกกริดใช้ `st.image(..., width="stretch")` — ยืดกว้างเต็มคอลัมน์แต่**คงสัดส่วนเดิม** → รูปแนวตั้งสูงกว่าแนวนอน → กริดไม่เรียง
+- **จุดที่ต้องแก้ (8 ที่ แพตเทิร์นเดียวกัน):**
+  ```
+  page_activity_admin.py:276, 344, 530     (คลัง / ถังขยะ / สแกนรูปซ้ำ)
+  page_activity_superuser.py:337, 409       (คลัง / ถังขยะ)
+  page_activity_user.py:72                  (รูปของฉัน)
+  page_activity_viewer.py:61                (อัลบั้มที่แชร์)
+  page_gallery.py:280                       (คลังทั่วไป)
+  ```
+  ⚠️ **อย่าแตะ 3 จุดนี้ (ไม่ใช่กริด จะเสียถ้าโดน crop):** `page_activity_admin.py:420` (QR width=200) · `page_activity_user.py:115` + `page_upload.py:54` (พรีวิวก่อนส่ง)
+- **แนวทางแก้ (ให้ CLI เลือก) — เป้าหมาย "ครอบกรอบเท่ากันแล้ว crop ส่วนเกิน" แบบ object-fit: cover:**
+  1. **CSS ครั้งเดียว (เร็ว)** ใน `_inject_css()`: `[data-testid="stImage"] img { height:200px; object-fit:cover; border-radius:8px; }`
+     ⚠️ โดน st.image **ทุกอัน** รวม QR+พรีวิว → QR crop จนสแกนไม่ได้ · ต้อง scope ให้แคบ (ครอบกริดด้วย container ที่มี class เฉพาะ) ซึ่ง Streamlit ทำยาก
+  2. **crop ตอนทำ thumbnail (สะอาดกว่า แนะนำ)** — ฟังก์ชันใหม่ `get_thumbnail(file_id, w, h)` center-crop ด้วย PIL แล้วกริดเรียกตัวนี้แทน `get_image_bytes` · **ปุ่มดาวน์โหลดต้องยังได้ไฟล์เต็ม ไม่ใช่รูป crop** · ข้อดีแถม: โหลดเบาลง กริดเร็วขึ้น + คุม QR/พรีวิวไม่ให้โดนกระทบแน่นอน
+- **🧪 เทสต์หลังแก้:** คลังภาพ → รูปแนวตั้ง+แนวนอนสูงเท่ากันเรียงเป็นตาราง · QR ยังสแกนได้ · พรีวิวก่อนส่งเห็นเต็มรูป · ดาวน์โหลดได้ไฟล์เต็ม
 
 ### ✅ [แก้แล้ว commit `64627c3`] #A ปุ่ม "← เปลี่ยนรหัส" ในหน้าเข้าร่วมกิจกรรม ทำให้คนถ่ายรูปสับสน
 

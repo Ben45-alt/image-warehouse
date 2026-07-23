@@ -17,7 +17,7 @@ from image_utils import compress_image, compute_phash, hamming_distance
 from google_utils import (
     upload_to_drive, append_activity_row, load_active_data, find_similar_photo,
     make_activity_filename, count_activity_photos, log_action, extract_file_id,
-    get_image_bytes, PHASH_DUP_THRESHOLD,
+    get_image_bytes, get_thumbnail, PHASH_DUP_THRESHOLD,
 )
 from page_gallery import COLS_PER_ROW   # reuse จำนวนคอลัมน์กริด ให้หน้าตาเหมือนหน้าอื่น
 
@@ -69,7 +69,7 @@ def _render_my_photos(activity_id, sender):
             with col:
                 file_id = extract_file_id(item["ลิงก์รูป"])
                 try:
-                    st.image(get_image_bytes(file_id), width="stretch")
+                    st.image(get_thumbnail(file_id), width="stretch")
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
                 st.caption(f"🗓️ {item.get('วันเวลา','')}")

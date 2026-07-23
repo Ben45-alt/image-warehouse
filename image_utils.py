@@ -129,6 +129,32 @@ def compress_image(uploaded_file, max_width: int = 1200, quality: int = 80, meta
 
 
 # ===========================================================================
+# thumbnail — ครอบรูปให้พอดีกรอบขนาดเท่ากัน (สำหรับกริดคลังภาพ)
+# ===========================================================================
+def crop_to_box(image_bytes: bytes, width: int = 400, height: int = 300) -> bytes:
+    """
+    ครอบรูปให้เต็มกรอบ width×height แบบ center-crop (เหมือน CSS object-fit: cover)
+    ใช้ทำ thumbnail ให้กริดรูปในคลังภาพ "สูงเท่ากันหมด" — รูปแนวตั้ง/แนวนอนถูกครอบ
+    ส่วนเกินออกให้ได้สัดส่วนเดียวกัน (ค่า default 4:3 = แนวนอนพอดีกรอบ)
+
+    ⚠️ ใช้แสดงผลเท่านั้น — ปุ่มดาวน์โหลดต้องได้ไฟล์เต็ม ไม่ใช่รูปที่ถูกครอบ
+    คืน bytes JPEG ; ถ้าทำไม่ได้คืน image_bytes เดิม (กริดยังโชว์รูปได้ แค่ขนาดไม่เท่า)
+    """
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img)          # หมุนให้ถูกด้านก่อนครอบ
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        # ImageOps.fit = resize + center-crop ให้เต็มกรอบพอดี (object-fit: cover)
+        img = ImageOps.fit(img, (width, height), method=Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return image_bytes
+
+
+# ===========================================================================
 # perceptual hash (dHash) — ลายนิ้วมือรูปไว้ตรวจ "ซ้ำ/เกือบเหมือน"
 # ===========================================================================
 def compute_phash(image_bytes: bytes) -> str:

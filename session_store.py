@@ -100,7 +100,7 @@ def read_token(token: str):
 def _manager():
     """
     ตัวเขียน/ลบ cookie (component ภายนอก) — คืน None ถ้าใช้ไม่ได้
-    ใช้ cache_resource ให้มีตัวเดียวทั้งแอป (สร้างซ้ำ = duplicate widget id)
+    ต้องมีตัวเดียวต่อ session (สร้างซ้ำ = duplicate widget id)
     """
     try:
         return _get_manager()
@@ -108,10 +108,19 @@ def _manager():
         return None
 
 
-@st.cache_resource(show_spinner=False)
 def _get_manager():
-    import extra_streamlit_components as stx
-    return stx.CookieManager(key=_COOKIE_KEY)
+    """
+    คืน CookieManager ตัวเดียวของ session นี้
+
+    ⚠️ ห้ามครอบด้วย @st.cache_resource — CookieManager เป็น widget/component
+    Streamlit เตือน CachedWidgetWarning (กล่อง error เหลืองแวบตอน login ตอน cache miss)
+    เมื่อสร้าง widget ในฟังก์ชันที่ถูก cache. เลย memoize ผ่าน session_state แทน
+    ซึ่งกันสร้างซ้ำจน key ชนได้เหมือนกัน แต่ไม่โดน warning
+    """
+    if "_cookie_mgr" not in st.session_state:
+        import extra_streamlit_components as stx
+        st.session_state["_cookie_mgr"] = stx.CookieManager(key=_COOKIE_KEY)
+    return st.session_state["_cookie_mgr"]
 
 
 def load() -> dict | None:

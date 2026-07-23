@@ -20,7 +20,7 @@ import auth
 from google_utils import (
     load_activities, add_activity, set_activity_status, delete_activity,
     load_data, load_active_data, load_trash_data,
-    get_image_bytes, extract_file_id, trash_photo, restore_photo, log_action, is_activity_open,
+    get_image_bytes, get_thumbnail, extract_file_id, trash_photo, restore_photo, log_action, is_activity_open,
     get_activity_visibility, set_activity_visibility, activity_shares, add_share, delete_share,
     VIS_PUBLIC, VIS_PRIVATE, group_duplicates,
     set_activity_join, JOIN_HEADER, JOIN_OPEN, JOIN_CODE,
@@ -273,7 +273,7 @@ def _render_gallery(username):
                 # ใส่ลำดับแถวในคีย์ด้วย: extract_file_id คืน "" ถ้าลิงก์เสีย → 2 ใบขึ้นไปคีย์ชนกัน แท็บล่ม
                 uid = f"{i + j}_{file_id}"
                 try:
-                    st.image(get_image_bytes(file_id), width="stretch")
+                    st.image(get_thumbnail(file_id), width="stretch")
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
                 act_name = id2name.get(str(item.get("activity_id")), "")
@@ -341,7 +341,7 @@ def _render_trash(username):
                 file_id = extract_file_id(item["ลิงก์รูป"])
                 uid = f"{i + j}_{file_id}"      # ใส่ลำดับกันคีย์ชนตอนลิงก์เสีย
                 try:
-                    st.image(get_image_bytes(file_id), width="stretch")
+                    st.image(get_thumbnail(file_id), width="stretch")
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
                 act_name = id2name.get(str(item.get("activity_id")), "")
@@ -527,7 +527,7 @@ def render_duplicate_scan(df, key_prefix, deleted_by, role):
             with cols[idx % ncol]:
                 file_id = extract_file_id(item["ลิงก์รูป"])
                 try:
-                    st.image(get_image_bytes(file_id), width="stretch")
+                    st.image(get_thumbnail(file_id), width="stretch")
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
                 st.caption(f"{item.get('ชื่อไฟล์','')}  \n👤 {item.get('ผู้ส่ง','')} · {item.get('วันเวลา','')}")

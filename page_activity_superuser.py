@@ -27,7 +27,7 @@ from google_utils import (
     EMAIL_HEADER, RESET_REQ_HEADER, USER_ACTIVE, USER_PENDING,
     set_activity_join, JOIN_HEADER, JOIN_OPEN, JOIN_CODE,
     set_activity_status, delete_activity, is_activity_open,
-    get_storage_quota, get_image_bytes, extract_file_id,
+    get_storage_quota, get_image_bytes, get_thumbnail, extract_file_id,
     delete_photo, trash_photo, restore_photo, log_action,
 )
 from page_gallery import build_zip, COLS_PER_ROW
@@ -334,7 +334,7 @@ def _render_all_gallery():
                 #    ถ้ามีแถวเสียตั้งแต่ 2 ใบขึ้นไป คีย์จะชนกันแล้วทั้งแท็บเรนเดอร์ไม่ขึ้น
                 uid = f"{i + j}_{file_id}"
                 try:
-                    st.image(get_image_bytes(file_id), width="stretch")
+                    st.image(get_thumbnail(file_id), width="stretch")
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
                 aid = str(item.get("activity_id"))
@@ -406,7 +406,7 @@ def _render_trash():
                 file_id = extract_file_id(item["ลิงก์รูป"])
                 uid = f"{i + j}_{file_id}"      # ใส่ลำดับกันคีย์ชนตอน file_id ว่าง (ลิงก์เสีย)
                 try:
-                    st.image(get_image_bytes(file_id), width="stretch")
+                    st.image(get_thumbnail(file_id), width="stretch")
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
                 aid = str(item.get("activity_id", "")).strip()

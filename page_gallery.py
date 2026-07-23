@@ -22,7 +22,7 @@ import pandas as pd
 from config import DEPARTMENTS, CATEGORIES
 from google_utils import (
     load_general_data, load_published_activity_data, load_activities,
-    download_file_bytes, extract_file_id, get_image_bytes,
+    download_file_bytes, extract_file_id, get_image_bytes, get_thumbnail,
     trash_photo, log_action,
 )
 
@@ -277,7 +277,7 @@ def _photo_grid(page_df: pd.DataFrame, allow_delete: bool, kind: str):
                 uid = f"{i + j}_{file_id}"
                 # โหลด bytes รูปจริงมาแสดง (ชัวร์กว่า URL thumbnail ที่บางทีไม่ขึ้น)
                 try:
-                    st.image(get_image_bytes(file_id), width="stretch")
+                    st.image(get_thumbnail(file_id), width="stretch")
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
 

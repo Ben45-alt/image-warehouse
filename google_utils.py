@@ -22,7 +22,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
-from image_utils import hamming_distance   # เทียบลายนิ้วมือรูป (phash) หาซ้ำ
+from image_utils import hamming_distance, crop_to_box   # เทียบ phash หาซ้ำ + ครอบ thumbnail
 
 # ระยะ phash ที่ถือว่า "รูปเดียวกัน/เกือบเหมือน" (0-64 ยิ่งน้อยยิ่งเหมือน)
 PHASH_DUP_THRESHOLD = 5
@@ -399,6 +399,18 @@ def get_image_bytes(file_id: str) -> bytes:
     cache ไว้ 10 นาที เพื่อไม่ต้องโหลดซ้ำทุกครั้งที่เปลี่ยนหน้า
     """
     return download_file_bytes(file_id)
+
+
+@st.cache_data(ttl=600, show_spinner=False, max_entries=300)
+def get_thumbnail(file_id: str, w: int = 400, h: int = 300) -> bytes:
+    """
+    รูปย่อสำหรับ "กริดคลังภาพ" — ครอบให้พอดีกรอบ w×h ทุกใบ (center-crop)
+    เพื่อให้รูปแนวตั้ง/แนวนอนสูงเท่ากันหมด เรียงเป็นตารางไม่เหลื่อม (ดู #H)
+
+    ใช้แสดงผลในกริดเท่านั้น — ปุ่มดาวน์โหลดยังเปิดไฟล์เต็มจาก Drive โดยตรง (ไม่ครอบ)
+    cache แยกจาก get_image_bytes เพราะเป็น bytes คนละชุด (รูปครอบแล้ว เบากว่า โหลดกริดเร็วขึ้น)
+    """
+    return crop_to_box(get_image_bytes(file_id), w, h)
 
 
 def extract_file_id(link: str) -> str:

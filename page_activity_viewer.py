@@ -8,7 +8,7 @@ identity: {activity_id, activity_name, viewer_name}
 import streamlit as st
 import pandas as pd
 
-from google_utils import load_active_data, get_image_bytes, extract_file_id
+from google_utils import load_active_data, get_image_bytes, get_thumbnail, extract_file_id
 from page_gallery import build_zip, COLS_PER_ROW   # reuse zip + จำนวนคอลัมน์กริด
 
 
@@ -58,7 +58,7 @@ def render():
             with col:
                 file_id = extract_file_id(item["ลิงก์รูป"])
                 try:
-                    st.image(get_image_bytes(file_id), width="stretch")
+                    st.image(get_thumbnail(file_id), width="stretch")
                 except Exception:
                     st.caption("⚠️ โหลดรูปไม่ได้")
                 st.caption(f"👤 {item.get('ผู้ส่ง','')} · 🗓️ {item.get('วันเวลา','')}")
