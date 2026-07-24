@@ -325,6 +325,43 @@ def open_activities(df: pd.DataFrame = None, now=None) -> pd.DataFrame:
     return df[mask].copy()
 
 
+def activity_status_label(row, now=None) -> str:
+    """ข้อความสถานะกิจกรรมสำหรับหน้าจัดการ — เลี่ยงป้ายขัดกัน (#L)
+
+    เดิมโชว์ 'สถานะ: เปิด · ⏰ ปิดอัตโนมัติแล้ว (ครบ 7 วัน)' พร้อมกัน อ่านแล้วงงว่าเปิดหรือปิด
+    ตอนนี้รวมเป็นป้ายเดียวที่สื่อชัด:
+      - ปิดในชีต            → 'ปิด'
+      - เปิด แต่ครบ 7 วัน    → 'ปิดรับรูปแล้ว (ครบ 7 วัน) · ยังเปิดให้ดูย้อนหลัง'
+      - เปิดปกติ            → 'เปิด'
+    """
+    status = str(row.get("สถานะ", "")).strip()
+    if status != "เปิด":
+        return status or "—"
+    if is_activity_open(row, now):
+        return "เปิด"
+    return "ปิดรับรูปแล้ว (ครบ 7 วัน) · ยังเปิดให้ดูย้อนหลัง"
+
+
+def nav_tabs(key: str, labels):
+    """แถบเลือกหน้าที่ 'จำ' หน้าที่เปิดไว้ข้าม rerun — แก้ปัญหา st.tabs เด้งกลับแท็บแรก (#K)
+
+    st.tabs เก็บ selection ไว้ที่ frontend เท่านั้น ไม่ผูก session_state → ปุ่มที่เรียก
+    st.rerun() ทำให้ Python วาดใหม่จากแท็บแรกเสมอ (บางจังหวะ frontend sync ไม่ทัน = เด้ง)
+    ตัวนี้ใช้ st.radio เก็บค่าที่เลือกไว้ใน session_state[key] → เลือกหน้าไหนก็อยู่หน้านั้น
+    แม้กดปุ่มที่ rerun ทั้งแอป · แถมเรนเดอร์เฉพาะหน้าที่เลือก (เดิม st.tabs รันทุกแท็บทุก rerun)
+
+    คืนค่า: label ที่ถูกเลือก — ผู้เรียกเอาไป if/elif เรนเดอร์เฉพาะหน้านั้น
+    """
+    labels = list(labels)
+    # กันค่าค้างจาก label เก่า (เช่นเปลี่ยนชื่อ/จำนวนแท็บ) → รีเซ็ตเป็นอันแรก ไม่ให้ค้างหน้าที่หายไป
+    if st.session_state.get(key) not in labels:
+        st.session_state[key] = labels[0]
+    return st.radio(
+        "เลือกหน้า", labels, key=key,
+        horizontal=True, label_visibility="collapsed",
+    )
+
+
 @st.cache_data(ttl=300)
 def load_data() -> pd.DataFrame:
     """

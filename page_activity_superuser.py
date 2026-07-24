@@ -27,6 +27,7 @@ from google_utils import (
     EMAIL_HEADER, RESET_REQ_HEADER, USER_ACTIVE, USER_PENDING,
     set_activity_join, JOIN_HEADER, JOIN_OPEN, JOIN_CODE,
     set_activity_status, delete_activity, is_activity_open,
+    activity_status_label, nav_tabs,
     get_storage_quota, get_image_bytes, get_thumbnail, extract_file_id,
     delete_photo, trash_photo, restore_photo, log_action,
 )
@@ -51,23 +52,28 @@ def _gb(num_bytes) -> float:
 
 
 def render():
-    tab_dash, tab_act, tab_gallery, tab_trash, tab_admin, tab_log, tab_general = st.tabs(
-        ["📊 Dashboard", "🎯 จัดการกิจกรรม", "🖼️ คลังภาพทุกกิจกรรม",
-         "🗑️ ถังขยะ", "👥 จัดการบัญชี admin", "📋 Log", "📁 คลังภาพทั่วไป"]
-    )
-    with tab_dash:
+    # ใช้ nav_tabs (จำหน้าที่เปิดข้าม rerun) แทน st.tabs ที่เด้งกลับแท็บแรกหลังกดปุ่ม (#K)
+    T_DASH = "📊 Dashboard"
+    T_ACT = "🎯 จัดการกิจกรรม"
+    T_GALLERY = "🖼️ คลังภาพทุกกิจกรรม"
+    T_TRASH = "🗑️ ถังขยะ"
+    T_ADMIN = "👥 จัดการบัญชี admin"
+    T_LOG = "📋 Log"
+    T_GENERAL = "📁 คลังภาพทั่วไป"
+    choice = nav_tabs("su_nav", [T_DASH, T_ACT, T_GALLERY, T_TRASH, T_ADMIN, T_LOG, T_GENERAL])
+    if choice == T_DASH:
         _render_dashboard()
-    with tab_act:
+    elif choice == T_ACT:
         _render_manage_activities()
-    with tab_gallery:
+    elif choice == T_GALLERY:
         _render_all_gallery()
-    with tab_trash:
+    elif choice == T_TRASH:
         _render_trash()
-    with tab_admin:
+    elif choice == T_ADMIN:
         _render_admin_accounts()
-    with tab_log:
+    elif choice == T_LOG:
         _render_log()
-    with tab_general:
+    elif choice == T_GENERAL:
         _render_general()
 
 
@@ -220,14 +226,13 @@ def _render_manage_activities():
     for _, a in df.iterrows():
         aid = str(a["activity_id"])
         n = int(counts.get(aid, 0))
-        auto_closed = str(a["สถานะ"]) == "เปิด" and not is_activity_open(a)
-        note = " · ⏰ ปิดอัตโนมัติแล้ว (ครบ 7 วัน)" if auto_closed else ""
+        status_label = activity_status_label(a)   # ป้ายเดียวสื่อชัด ไม่โชว์ 'เปิด · ปิดอัตโนมัติ' ขัดกัน (#L)
         join_now = str(a.get(JOIN_HEADER, "")).strip() or JOIN_CODE
         join_label = "🌐 ใครก็ส่งได้" if join_now == JOIN_OPEN else "🔒 ต้องมีรหัส"
         c1, c2, c3 = st.columns([5, 2, 2])
         c1.markdown(
             f"**{a['ชื่อกิจกรรม']}**  \n"
-            f"สถานะ: {a['สถานะ']}{note} · {join_label} · 🛠️ {a.get('คนสร้าง','?')} · {n} รูป · สร้างเมื่อ {a.get('วันที่สร้าง','')}"
+            f"สถานะ: {status_label} · {join_label} · 🛠️ {a.get('คนสร้าง','?')} · {n} รูป · สร้างเมื่อ {a.get('วันที่สร้าง','')}"
         )
         _other = JOIN_CODE if join_now == JOIN_OPEN else JOIN_OPEN
         if st.button(("🔒 เปลี่ยนเป็น 'ต้องมีรหัส'" if _other == JOIN_CODE

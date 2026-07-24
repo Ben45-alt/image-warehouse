@@ -13,7 +13,7 @@
 
 import streamlit as st
 
-from google_utils import check_connection
+from google_utils import check_connection, nav_tabs
 import page_upload
 import page_gallery
 import page_dashboard
@@ -57,14 +57,16 @@ def render_general_warehouse():
         if st.button("🚪 ออกจากระบบ"):
             auth.logout()
 
-    tab_upload, tab_gallery, tab_dashboard = st.tabs(
-        ["📤 ส่งรูป", "🖼️ คลังภาพ", "📊 Dashboard"]
-    )
-    with tab_upload:
+    # nav_tabs (จำหน้าที่เปิดข้าม rerun) แทน st.tabs ที่เด้งกลับแท็บแรกหลังกดปุ่ม (#K)
+    T_UPLOAD = "📤 ส่งรูป"
+    T_GALLERY = "🖼️ คลังภาพ"
+    T_DASH = "📊 Dashboard"
+    choice = nav_tabs("general_nav", [T_UPLOAD, T_GALLERY, T_DASH])
+    if choice == T_UPLOAD:
         page_upload.render()
-    with tab_gallery:
+    elif choice == T_GALLERY:
         page_gallery.render()
-    with tab_dashboard:
+    elif choice == T_DASH:
         page_dashboard.render()
 
 

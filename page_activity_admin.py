@@ -21,6 +21,7 @@ from google_utils import (
     load_activities, add_activity, set_activity_status, delete_activity,
     load_data, load_active_data, load_trash_data,
     get_image_bytes, get_thumbnail, extract_file_id, trash_photo, restore_photo, log_action, is_activity_open,
+    activity_status_label, nav_tabs,
     get_activity_visibility, set_activity_visibility, activity_shares, add_share, delete_share,
     VIS_PUBLIC, VIS_PRIVATE, group_duplicates,
     set_activity_join, JOIN_HEADER, JOIN_OPEN, JOIN_CODE,
@@ -57,16 +58,19 @@ def _gen_activity_id() -> str:
 
 def render():
     username = st.session_state.get("identity", {}).get("username", "")
-    tab_act, tab_gallery, tab_trash, tab_dash = st.tabs(
-        ["🎯 กิจกรรมของฉัน", "🖼️ คลังภาพกิจกรรม", "🗑️ ถังขยะ", "📊 ภาพรวม"]
-    )
-    with tab_act:
+    # nav_tabs (จำหน้าที่เปิดข้าม rerun) แทน st.tabs ที่เด้งกลับแท็บแรกหลังกดปุ่ม (#K)
+    T_ACT = "🎯 กิจกรรมของฉัน"
+    T_GALLERY = "🖼️ คลังภาพกิจกรรม"
+    T_TRASH = "🗑️ ถังขยะ"
+    T_DASH = "📊 ภาพรวม"
+    choice = nav_tabs("adm_nav", [T_ACT, T_GALLERY, T_TRASH, T_DASH])
+    if choice == T_ACT:
         _render_activities(username)
-    with tab_gallery:
+    elif choice == T_GALLERY:
         _render_gallery(username)
-    with tab_trash:
+    elif choice == T_TRASH:
         _render_trash(username)
-    with tab_dash:
+    elif choice == T_DASH:
         _render_dashboard(username)
 
 
@@ -126,15 +130,14 @@ def _render_activities(username):
     for _, a in mine.iterrows():
         aid = str(a["activity_id"])
         n = _count_photos(photos, aid)
-        # ปิดอัตโนมัติแล้วหรือยัง (สถานะเปิดในชีต แต่ครบ 7 วันจากวันสร้าง → ผู้เข้าร่วม login ไม่ได้แล้ว)
-        auto_closed = str(a["สถานะ"]) == "เปิด" and not is_activity_open(a)
-        note = " · ⏰ ปิดอัตโนมัติแล้ว (ครบ 7 วัน)" if auto_closed else ""
+        # ป้ายสถานะเดียวสื่อชัด ไม่โชว์ 'เปิด · ปิดอัตโนมัติแล้ว' ขัดกัน (#L)
+        status_label = activity_status_label(a)
         join_now = str(a.get(JOIN_HEADER, "")).strip() or JOIN_CODE
         join_label = "🌐 ใครก็ส่งได้" if join_now == JOIN_OPEN else "🔒 ต้องมีรหัส"
         c1, c2, c3 = st.columns([5, 2, 2])
         c1.markdown(
             f"**{a['ชื่อกิจกรรม']}**  \n"
-            f"สถานะ: {a['สถานะ']}{note} · {join_label} · {n} รูป · สร้างเมื่อ {a['วันที่สร้าง']}"
+            f"สถานะ: {status_label} · {join_label} · {n} รูป · สร้างเมื่อ {a['วันที่สร้าง']}"
         )
         if str(a["สถานะ"]) == "เปิด":
             if c2.button("⏸️ ปิดกิจกรรม", key=f"close_{aid}", width="stretch"):
