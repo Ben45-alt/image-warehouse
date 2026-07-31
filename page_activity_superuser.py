@@ -26,16 +26,18 @@ from google_utils import (
     reset_requests, set_user_password,
     EMAIL_HEADER, RESET_REQ_HEADER, USER_ACTIVE, USER_PENDING,
     set_activity_join, JOIN_HEADER, JOIN_OPEN, JOIN_CODE,
-    set_activity_status, delete_activity, is_activity_open,
+    set_activity_status, is_activity_open, is_activity_expired,
+    sync_auto_closed, filter_activities, AUTO_CLOSE_DAYS,
+    ACT_OPEN, ACT_CLOSED, ACT_ARCHIVED, ACT_DELETED,
     activity_status_label, nav_tabs,
     get_storage_quota, get_image_bytes, get_thumbnail, extract_file_id,
     delete_photo, trash_photo, restore_photo, log_action,
 )
 from page_gallery import build_zip, COLS_PER_ROW
-# reuse จากหน้า admin: สร้างกิจกรรม (กันรหัสซ้ำ/สุ่มรหัส) + กล่องแชร์อัลบั้ม จะได้ไม่เขียนซ้ำ
+# reuse จากหน้า admin: สร้างกิจกรรม (กันรหัสซ้ำ/สุ่มรหัส) + กล่องแชร์อัลบั้ม + ปุ่มจบกิจกรรม
 from page_activity_admin import (
     _create_activity, render_share_panel, render_duplicate_scan, render_code_with_qr,
-    render_publish_toggle,
+    render_publish_toggle, render_activity_filter, render_activity_end_actions,
 )
 
 import page_upload
@@ -214,6 +216,15 @@ def _render_manage_activities():
 
     st.divider()
 
+    # ครบ 7 วัน → ปิดสถานะให้จริงในชีต (#N) — ทำก่อนอ่านรายการ ป้าย/ตัวกรองจะได้ตรงรอบเดียวกัน
+    try:
+        closed_now = sync_auto_closed()
+        if closed_now:
+            st.info(f"🕐 ปิดกิจกรรมที่ครบ {AUTO_CLOSE_DAYS} วันให้อัตโนมัติแล้ว {closed_now} กิจกรรม "
+                    "— ยังเปิดให้ดูรูปย้อนหลังได้ตามเดิม")
+    except Exception:
+        pass
+
     # รายการ "ทุก" กิจกรรมในระบบ (ของทุก admin) + เปิด/ปิดได้
     st.markdown("**กิจกรรมทั้งหมดในระบบ**")
     df = load_activities()
@@ -221,60 +232,49 @@ def _render_manage_activities():
         st.info("ยังไม่มีกิจกรรม — สร้างอันแรกด้านบนได้เลย")
         return
 
-    # นับจากทุกแถว (รวมถังขยะ) เพราะลบกิจกรรม = ลบทุกรูปของมันจริง คำเตือนจะได้ตรงจำนวน
-    counts = _counts_by_activity(_activity_photos(load_data()))
+    total = len(df)
+    df = filter_activities(df, render_activity_filter("su_act_filter"))
+    if df.empty:
+        st.info(f"ไม่มีกิจกรรมในกลุ่มนี้ (ในระบบมีทั้งหมด {total} กิจกรรม — เลือก 'ทั้งหมด' เพื่อดูทุกอัน)")
+        return
+
+    # นับเฉพาะรูปที่ยังไม่อยู่ในถังขยะ — ตรงกับจำนวนที่จะถูกย้ายเข้าถังขยะ/เผยแพร่จริงตอนกดปุ่ม
+    counts = _counts_by_activity(_activity_photos(load_active_data()))
     for _, a in df.iterrows():
         aid = str(a["activity_id"])
         n = int(counts.get(aid, 0))
         status_label = activity_status_label(a)   # ป้ายเดียวสื่อชัด ไม่โชว์ 'เปิด · ปิดอัตโนมัติ' ขัดกัน (#L)
         join_now = str(a.get(JOIN_HEADER, "")).strip() or JOIN_CODE
         join_label = "🌐 ใครก็ส่งได้" if join_now == JOIN_OPEN else "🔒 ต้องมีรหัส"
-        c1, c2, c3 = st.columns([5, 2, 2])
+        closed_out = str(a.get("สถานะ", "")).strip() in (ACT_ARCHIVED, ACT_DELETED)
+        c1, c2 = st.columns([7, 2])
         c1.markdown(
             f"**{a['ชื่อกิจกรรม']}**  \n"
             f"สถานะ: {status_label} · {join_label} · 🛠️ {a.get('คนสร้าง','?')} · {n} รูป · สร้างเมื่อ {a.get('วันที่สร้าง','')}"
         )
-        _other = JOIN_CODE if join_now == JOIN_OPEN else JOIN_OPEN
-        if st.button(("🔒 เปลี่ยนเป็น 'ต้องมีรหัส'" if _other == JOIN_CODE
-                      else "🌐 เปลี่ยนเป็น 'ใครก็ส่งได้'"), key=f"su_join_{aid}"):
-            set_activity_join(aid, _other)
-            st.rerun()
-        if str(a["สถานะ"]) == "เปิด":
-            if c2.button("⏸️ ปิดกิจกรรม", key=f"su_close_{aid}", width="stretch"):
-                set_activity_status(aid, "ปิด")
+        if not closed_out:
+            _other = JOIN_CODE if join_now == JOIN_OPEN else JOIN_OPEN
+            if st.button(("🔒 เปลี่ยนเป็น 'ต้องมีรหัส'" if _other == JOIN_CODE
+                          else "🌐 เปลี่ยนเป็น 'ใครก็ส่งได้'"), key=f"su_join_{aid}"):
+                set_activity_join(aid, _other)
                 st.rerun()
-        else:
-            if c2.button("▶️ เปิดกิจกรรม", key=f"su_open_{aid}", width="stretch"):
-                set_activity_status(aid, "เปิด")
-                st.rerun()
-
-        # ลบกิจกรรม "ถาวร" (superuser เท่านั้น) — มีขั้นยืนยัน + เตือนว่ารูปทั้งหมดจะถูกลบด้วย
-        del_key = f"su_confirm_delact_{aid}"
-        if st.session_state.get(del_key):
-            st.error(
-                f"⚠️ ลบกิจกรรม **{a['ชื่อกิจกรรม']}** ถาวร? "
-                f"รูปทั้งหมด **{n} รูป** จะถูกลบทั้งใน Google Drive และ Sheet — กู้คืนไม่ได้"
-            )
-            y, no = st.columns(2)
-            if y.button("✅ ลบกิจกรรม + รูปทั้งหมด", key=f"su_delact_yes_{aid}", width="stretch"):
-                try:
-                    su = st.session_state.get("identity", {}).get("username", "superuser")
-                    with st.spinner("กำลังลบกิจกรรมและรูปทั้งหมด..."):
-                        removed = delete_activity(aid)
-                    log_action(su, "superuser", "ลบกิจกรรมถาวร",
-                               detail=f"{a['ชื่อกิจกรรม']} (รูป {removed} ใบ)", activity_id=aid)
-                    st.session_state.pop(del_key, None)
-                    # delete_activity ล้าง load_data+load_activities, log_action ล้าง load_log อยู่แล้ว
+            if str(a["สถานะ"]) == ACT_OPEN:
+                if c2.button("⏸️ ปิดกิจกรรม", key=f"su_close_{aid}", width="stretch"):
+                    set_activity_status(aid, ACT_CLOSED)
                     st.rerun()
-                except Exception as e:
-                    st.error(f"ลบไม่สำเร็จ: {e}")
-            if no.button("❌ ยกเลิก", key=f"su_delact_no_{aid}", width="stretch"):
-                st.session_state.pop(del_key, None)
-                st.rerun()
-        else:
-            if c3.button("🗑️ ลบกิจกรรม", key=f"su_delact_{aid}", width="stretch"):
-                st.session_state[del_key] = True
-                st.rerun()
+            elif is_activity_expired(a.get("วันที่สร้าง")):
+                # ครบ 7 วันแล้วเปิดใหม่ไม่ได้ — กดไปก็ถูก sync ปิดกลับทันที (#N)
+                c2.button("▶️ เปิดกิจกรรม", key=f"su_open_{aid}", width="stretch", disabled=True,
+                          help=f"ครบ {AUTO_CLOSE_DAYS} วันแล้ว รับรูปเพิ่มไม่ได้ — "
+                               "ถ้าต้องรับรูปอีก ให้สร้างกิจกรรมใหม่ (รูปเก่ายังดูย้อนหลังได้)")
+            else:
+                if c2.button("▶️ เปิดกิจกรรม", key=f"su_open_{aid}", width="stretch"):
+                    set_activity_status(aid, ACT_OPEN)
+                    st.rerun()
+
+        # ปุ่มตอนจบกิจกรรม (ใช้ตัวเดียวกับหน้า admin): 📦 เก็บเข้าคลัง · 🗑️ ลบ → ถังขยะ 30 วัน
+        # superuser ลบได้ทุกกิจกรรมแม้มีรูป (admin ลบได้เฉพาะกิจกรรมว่าง)
+        render_activity_end_actions(a, n, "su", su, "superuser", delete_needs_empty=False)
 
         # กล่องแชร์อัลบั้ม (superuser จัดการได้ทุกกิจกรรม)
         render_share_panel(aid, str(a["ชื่อกิจกรรม"]), "su")

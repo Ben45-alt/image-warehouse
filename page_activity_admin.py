@@ -19,8 +19,10 @@ import pandas as pd
 import auth
 from google_utils import (
     load_activities, add_activity, set_activity_status, delete_activity,
+    archive_activity, restore_activity, sync_auto_closed, filter_activities,
+    ACT_OPEN, ACT_CLOSED, ACT_ARCHIVED, ACT_DELETED, AUTO_CLOSE_DAYS,
     load_data, load_active_data, load_trash_data,
-    get_image_bytes, get_thumbnail, extract_file_id, trash_photo, restore_photo, log_action, is_activity_open,
+    get_image_bytes, get_thumbnail, extract_file_id, trash_photo, restore_photo, log_action, is_activity_open, is_activity_expired,
     activity_status_label, nav_tabs,
     get_activity_visibility, set_activity_visibility, activity_shares, add_share, delete_share,
     VIS_PUBLIC, VIS_PRIVATE, group_duplicates,
@@ -119,11 +121,27 @@ def _render_activities(username):
 
     st.divider()
 
+    # ครบ 7 วัน → ปิดสถานะให้จริงในชีต ไม่ต้องให้คนสร้างมากดปิดเอง (#N)
+    # ทำก่อนอ่านรายการ เพื่อให้ป้ายสถานะ/ตัวกรองด้านล่างตรงกับของจริงในรอบเดียวกัน
+    try:
+        closed_now = sync_auto_closed()
+        if closed_now:
+            st.info(f"🕐 ปิดกิจกรรมที่ครบ {AUTO_CLOSE_DAYS} วันให้อัตโนมัติแล้ว {closed_now} กิจกรรม "
+                    "— ยังเปิดให้ดูรูปย้อนหลังได้ตามเดิม")
+    except Exception:
+        pass    # ปิดสถานะไม่สำเร็จก็แค่ยังโชว์ 'ปิดรับรูปแล้ว' เหมือนเดิม ไม่ให้หน้าพัง
+
     # รายการกิจกรรมของตัวเอง
     df = load_activities()
     mine = _my_activities(df, username)
     if mine.empty:
         st.info("คุณยังไม่ได้สร้างกิจกรรม — สร้างอันแรกด้านบนได้เลย")
+        return
+
+    total = len(mine)
+    mine = filter_activities(mine, render_activity_filter("adm_act_filter"))
+    if mine.empty:
+        st.info(f"ไม่มีกิจกรรมในกลุ่มนี้ (คุณมีทั้งหมด {total} กิจกรรม — เลือก 'ทั้งหมด' เพื่อดูทุกอัน)")
         return
 
     photos = load_data()
@@ -134,61 +152,37 @@ def _render_activities(username):
         status_label = activity_status_label(a)
         join_now = str(a.get(JOIN_HEADER, "")).strip() or JOIN_CODE
         join_label = "🌐 ใครก็ส่งได้" if join_now == JOIN_OPEN else "🔒 ต้องมีรหัส"
-        c1, c2, c3 = st.columns([5, 2, 2])
+        closed_out = str(a.get("สถานะ", "")).strip() in (ACT_ARCHIVED, ACT_DELETED)
+        c1, c2 = st.columns([7, 2])
         c1.markdown(
             f"**{a['ชื่อกิจกรรม']}**  \n"
             f"สถานะ: {status_label} · {join_label} · {n} รูป · สร้างเมื่อ {a['วันที่สร้าง']}"
         )
-        if str(a["สถานะ"]) == "เปิด":
-            if c2.button("⏸️ ปิดกิจกรรม", key=f"close_{aid}", width="stretch"):
-                set_activity_status(aid, "ปิด")
-                st.rerun()
-        else:
-            if c2.button("▶️ เปิดกิจกรรม", key=f"open_{aid}", width="stretch"):
-                set_activity_status(aid, "เปิด")
-                st.rerun()
-
-        # ลบกิจกรรม — admin ลบได้ "เฉพาะกิจกรรมที่ยังไม่มีรูป" (ไว้แก้ตอนสร้างผิด)
-        # ถ้ามีรูปแล้วลบไม่ได้ ต้องให้ superuser ลบ (กันเผลอลบรูปของลูกน้องหลุดมือ)
-        if n > 0:
-            c3.button("🗑️ ลบกิจกรรม", key=f"adm_delact_{aid}", width="stretch",
-                      disabled=True, help="มีรูปแล้ว ลบไม่ได้ — แจ้ง superuser ให้ลบแทน")
-        else:
-            del_key = f"adm_confirm_delact_{aid}"
-            if st.session_state.get(del_key):
-                st.warning(f"⚠️ ลบกิจกรรม **{a['ชื่อกิจกรรม']}** ถาวร? (ยังไม่มีรูปในกิจกรรมนี้)")
-                y, no = st.columns(2)
-                if y.button("✅ ลบเลย", key=f"adm_delact_yes_{aid}", width="stretch"):
-                    try:
-                        # อ่านสดอีกครั้ง กันมีรูปเพิ่งถูกส่งเข้ามาหลังหน้าโหลด → ถ้ามีรูปแล้ว admin ลบไม่ได้
-                        load_data.clear()
-                        if _count_photos(load_data(), aid) > 0:
-                            st.error("❌ มีรูปเข้ามาในกิจกรรมนี้แล้ว — ลบไม่ได้ ต้องให้ superuser ลบ")
-                            st.session_state.pop(del_key, None)
-                        else:
-                            delete_activity(aid)
-                            log_action(username, "admin", "ลบกิจกรรม",
-                                       detail=str(a["ชื่อกิจกรรม"]), activity_id=aid)
-                            st.session_state.pop(del_key, None)
-                            # delete_activity ล้าง load_data+load_activities, log_action ล้าง load_log อยู่แล้ว
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"ลบไม่สำเร็จ: {e}")
-                if no.button("❌ ยกเลิก", key=f"adm_delact_no_{aid}", width="stretch"):
-                    st.session_state.pop(del_key, None)
+        if not closed_out:
+            if str(a["สถานะ"]) == ACT_OPEN:
+                if c2.button("⏸️ ปิดกิจกรรม", key=f"close_{aid}", width="stretch"):
+                    set_activity_status(aid, ACT_CLOSED)
                     st.rerun()
+            elif is_activity_expired(a.get("วันที่สร้าง")):
+                # ครบ 7 วันแล้วเปิดใหม่ไม่ได้ — กดไปก็ถูก sync ปิดกลับทันที (#N) จะงงเปล่าๆ
+                c2.button("▶️ เปิดกิจกรรม", key=f"open_{aid}", width="stretch", disabled=True,
+                          help=f"ครบ {AUTO_CLOSE_DAYS} วันแล้ว รับรูปเพิ่มไม่ได้ — "
+                               "ถ้าต้องรับรูปอีก ให้สร้างกิจกรรมใหม่ (รูปเก่ายังดูย้อนหลังได้)")
             else:
-                if c3.button("🗑️ ลบกิจกรรม", key=f"adm_delact_{aid}", width="stretch"):
-                    st.session_state[del_key] = True
+                if c2.button("▶️ เปิดกิจกรรม", key=f"open_{aid}", width="stretch"):
+                    set_activity_status(aid, ACT_OPEN)
                     st.rerun()
 
-        # สลับโหมดการส่งรูปได้ทีหลัง (เผลอตั้งผิด/เปลี่ยนใจ)
-        other = JOIN_CODE if join_now == JOIN_OPEN else JOIN_OPEN
-        swap_label = ("🔒 เปลี่ยนเป็น 'ต้องมีรหัส'" if other == JOIN_CODE
-                      else "🌐 เปลี่ยนเป็น 'ใครก็ส่งได้'")
-        if st.button(swap_label, key=f"adm_join_{aid}"):
-            set_activity_join(aid, other)
-            st.rerun()
+            # สลับโหมดการส่งรูปได้ทีหลัง (เผลอตั้งผิด/เปลี่ยนใจ)
+            other = JOIN_CODE if join_now == JOIN_OPEN else JOIN_OPEN
+            swap_label = ("🔒 เปลี่ยนเป็น 'ต้องมีรหัส'" if other == JOIN_CODE
+                          else "🌐 เปลี่ยนเป็น 'ใครก็ส่งได้'")
+            if st.button(swap_label, key=f"adm_join_{aid}"):
+                set_activity_join(aid, other)
+                st.rerun()
+
+        # ปุ่มตอนจบกิจกรรม: 📦 เก็บเข้าคลัง (หลัก) · 🗑️ ลบ → ถังขยะ 30 วัน (รอง)
+        render_activity_end_actions(a, n, "adm", username, "admin", delete_needs_empty=True)
 
         # กล่องแชร์อัลบั้ม (ทุกคน/เฉพาะคน + รายชื่อคนดู + รหัสส่วนตัว)
         render_share_panel(aid, str(a["ชื่อกิจกรรม"]), "adm")
@@ -399,6 +393,123 @@ def _render_dashboard(username):
 # --------------------------------------------------------------------------
 # กล่องแชร์อัลบั้ม (ใช้ร่วมกันทั้งหน้า admin และ superuser)
 # --------------------------------------------------------------------------
+def render_activity_filter(key: str) -> str:
+    """
+    (#O) ตัวกรองรายการกิจกรรม — เปิด (ค่าเริ่มต้น) / ปิด / เก็บเข้าคลัง / ทั้งหมด
+
+    หัวหน้าสั่ง: "default โชว์แต่กิจที่เปิด ไม่งั้นยาว" · เก็บค่าที่เลือกไว้ใน session_state
+    (แบบเดียวกับ nav_tabs #K) → กดปุ่มอะไรแล้ว rerun ก็ยังอยู่ตัวกรองเดิม
+    คืนค่าที่เลือก เอาไปส่งให้ google_utils.filter_activities()
+    """
+    labels = {
+        ACT_OPEN: "🟢 ที่เปิดอยู่",
+        ACT_CLOSED: "⏸️ ที่ปิดแล้ว",
+        ACT_ARCHIVED: "📦 เก็บเข้าคลัง",
+        "ทั้งหมด": "ทั้งหมด",
+    }
+    options = list(labels)
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = ACT_OPEN      # ค่าเริ่มต้น = เฉพาะที่เปิดอยู่
+    return st.radio("แสดงกิจกรรม", options, key=key, horizontal=True,
+                    format_func=lambda v: labels[v],
+                    help="ที่ปิด/เก็บเข้าคลัง/ลบแล้ว ถูกซ่อนไว้กันรายการยาว — เลือก 'ทั้งหมด' เพื่อดูทุกอัน")
+
+
+def render_activity_end_actions(a, n, key_prefix, who, role, delete_needs_empty=False):
+    """
+    ปุ่ม "ตอนจบกิจกรรม" ใช้ร่วมกันทั้งหน้า admin และ superuser — 2 ทางเลือกที่แยกกันชัด:
+      ① 📦 เก็บเข้าคลัง (#P)  = จบงานปกติ **ไม่มีอะไรหาย** รูปไปรวมเป็นโฟลเดอร์ชื่อกิจกรรม
+                                 ในคลังภาพทั่วไป · กิจกรรมหายจากรายการจัดการ  ← ปุ่มหลัก
+      ② 🗑️ ลบกิจกรรม (#Q)   = อยากเอาออกจริง รูปลงถังขยะ 30 วัน กู้คืนได้     ← ปุ่มรอง
+
+    delete_needs_empty=True (หน้า admin) = ลบได้เฉพาะกิจกรรมที่ยังไม่มีรูป — ของเดิม กันเผลอ
+    ลบรูปลูกน้องหลุดมือ (กิจกรรมที่มีรูปต้องให้ superuser ลบ)
+    """
+    aid = str(a["activity_id"])
+    name = str(a["ชื่อกิจกรรม"])
+    status = str(a.get("สถานะ", "")).strip()
+
+    # กิจกรรมที่เก็บเข้าคลัง/ลบแล้ว → เหลือปุ่มเดียวคือเอากลับมาจัดการ
+    if status in (ACT_ARCHIVED, ACT_DELETED):
+        back = "♻️ กู้คืนกิจกรรม" if status == ACT_DELETED else "♻️ เอากลับมาจัดการ"
+        if st.button(back, key=f"{key_prefix}_unarchive_{aid}", width="stretch"):
+            try:
+                with st.spinner("กำลังกู้คืน..."):
+                    got = restore_activity(aid)
+                log_action(who, role, "กู้คืนกิจกรรม",
+                           detail=f"{name} (รูป {got} ใบ)" if got else name, activity_id=aid)
+                st.rerun()
+            except Exception as e:
+                st.error(f"กู้คืนไม่สำเร็จ: {e}")
+        return
+
+    c_arch, c_del = st.columns(2)
+
+    # ---------- ① เก็บเข้าคลัง ----------
+    arch_key = f"{key_prefix}_confirm_arch_{aid}"
+    if c_arch.button("📦 เก็บเข้าคลัง", key=f"{key_prefix}_arch_{aid}", width="stretch",
+                     help="จบกิจกรรม แล้วย้ายรูปทั้งหมดไปเก็บเป็นโฟลเดอร์ในคลังภาพทั่วไป (ไม่มีรูปหาย)"):
+        st.session_state[arch_key] = True
+        st.rerun()
+    if st.session_state.get(arch_key):
+        st.info(
+            f"📦 เก็บกิจกรรม **{name}** เข้าคลัง? รูป **{n} ใบ** จะไปโผล่เป็นโฟลเดอร์ "
+            f"“{name}” ในคลังภาพทั่วไป (ดู/ดาวน์โหลดได้ ไม่มีรูปหาย) · กิจกรรมจะถูกซ่อนจากรายการนี้ "
+            "— เอากลับมาได้ทีหลัง"
+        )
+        y, no = st.columns(2)
+        if y.button("✅ เก็บเข้าคลังเลย", key=f"{key_prefix}_arch_yes_{aid}", width="stretch"):
+            try:
+                with st.spinner("กำลังย้ายรูปเข้าคลังภาพทั่วไป..."):
+                    moved = archive_activity(aid)
+                log_action(who, role, "เก็บกิจกรรมเข้าคลัง",
+                           detail=f"{name} (รูป {moved} ใบ)", activity_id=aid)
+                st.session_state.pop(arch_key, None)
+                st.rerun()
+            except Exception as e:
+                st.error(f"เก็บเข้าคลังไม่สำเร็จ: {e}")
+        if no.button("❌ ยกเลิก", key=f"{key_prefix}_arch_no_{aid}", width="stretch"):
+            st.session_state.pop(arch_key, None)
+            st.rerun()
+
+    # ---------- ② ลบกิจกรรม → ถังขยะ 30 วัน ----------
+    del_key = f"{key_prefix}_confirm_delact_{aid}"
+    if delete_needs_empty and n > 0:
+        c_del.button("🗑️ ลบกิจกรรม", key=f"{key_prefix}_delact_{aid}", width="stretch",
+                     disabled=True, help="มีรูปแล้ว ลบไม่ได้ — ใช้ '📦 เก็บเข้าคลัง' หรือแจ้ง superuser")
+    elif c_del.button("🗑️ ลบกิจกรรม", key=f"{key_prefix}_delact_{aid}", width="stretch",
+                      help="รูปจะไปอยู่ถังขยะ 30 วัน กู้คืนได้"):
+        st.session_state[del_key] = True
+        st.rerun()
+
+    if st.session_state.get(del_key):
+        st.warning(
+            f"⚠️ ลบกิจกรรม **{name}**? รูป **{n} ใบ** จะถูกย้ายไป **ถังขยะ** "
+            "(กู้คืนได้ ~30 วัน แล้ว Google จะลบถาวรอัตโนมัติ)"
+        )
+        y, no = st.columns(2)
+        if y.button("✅ ลบเลย (ลงถังขยะ)", key=f"{key_prefix}_delact_yes_{aid}", width="stretch"):
+            try:
+                # อ่านสดอีกครั้ง กันมีรูปเพิ่งถูกส่งเข้ามาหลังหน้าโหลด (admin ลบได้เฉพาะกิจกรรมว่าง)
+                if delete_needs_empty:
+                    load_data.clear()
+                    if _count_photos(load_data(), aid) > 0:
+                        st.error("❌ มีรูปเข้ามาในกิจกรรมนี้แล้ว — ลบไม่ได้ ใช้ '📦 เก็บเข้าคลัง' แทน")
+                        st.session_state.pop(del_key, None)
+                        return
+                with st.spinner("กำลังย้ายรูปเข้าถังขยะ..."):
+                    moved = delete_activity(aid, deleted_by=who)
+                log_action(who, role, "ลบกิจกรรม(ถังขยะ)",
+                           detail=f"{name} (รูป {moved} ใบ)", activity_id=aid)
+                st.session_state.pop(del_key, None)
+                st.rerun()
+            except Exception as e:
+                st.error(f"ลบไม่สำเร็จ: {e}")
+        if no.button("❌ ยกเลิก", key=f"{key_prefix}_delact_no_{aid}", width="stretch"):
+            st.session_state.pop(del_key, None)
+            st.rerun()
+
+
 def render_code_with_qr(code, key_prefix, kind="view"):
     """
     โชว์รหัส (ตัวอักษร) + ปุ่มเปิด/ปิด QR แบบ deep-link ของรหัสนั้น
@@ -458,15 +569,24 @@ def render_share_panel(activity_id, activity_name, key_prefix):
         if add_ok:
             _add_share(activity_id, vname, key_prefix)
 
-        last = st.session_state.get(f"{key_prefix}_last_share_{activity_id}")
+        shares = activity_shares(activity_id)
+
+        # กล่องเขียว "รหัสดูของ X" — โชว์เฉพาะตอนที่คนนั้น **ยังมีสิทธิ์ดูอยู่จริง** (#M)
+        # เดิมล้างได้ทางเดียวคือกดปุ่ม "รับทราบ" → กดถอนสิทธิ์แล้วกล่องยังค้าง
+        # (ค้างข้ามการเปลี่ยนเมนูด้วย เพราะ session_state ไม่หาย) แถมโชว์รหัสที่ยกเลิกไปแล้วให้ก๊อป
+        flash_key = f"{key_prefix}_last_share_{activity_id}"
+        last = st.session_state.get(flash_key)
+        names_now = set(shares["ชื่อผู้ดู"].astype(str)) if not shares.empty else set()
+        if last and str(last.get("name", "")) not in names_now:
+            del st.session_state[flash_key]      # ถอนสิทธิ์ไปแล้ว → รหัสใช้ไม่ได้ ไม่ต้องโชว์
+            last = None
         if last:
             st.success(f"✅ รหัสดูของ “{last['name']}” — ก๊อปส่งให้เขาเปิดที่หน้า 'ดูอัลบั้ม':")
             render_code_with_qr(last["code"], f"{key_prefix}_sharecode_{activity_id}", kind="view")
             if st.button("รับทราบ / ปิดข้อความ", key=f"{key_prefix}_dismiss_share_{activity_id}"):
-                del st.session_state[f"{key_prefix}_last_share_{activity_id}"]
+                del st.session_state[flash_key]
                 st.rerun()
 
-        shares = activity_shares(activity_id)
         if shares.empty:
             st.caption("ยังไม่มีใครถูกแชร์ให้ดู — เพิ่มด้านบน (คนไม่ถูกแชร์เปิดอัลบั้มไม่ได้)")
         else:

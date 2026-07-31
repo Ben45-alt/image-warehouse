@@ -220,6 +220,47 @@ def _update_row_fields(link: str, fields: dict) -> bool:
     return True
 
 
+def _batch_set_photo_fields(links, fields: dict) -> int:
+    """
+    ตั้งค่าคอลัมน์เดียวกันให้รูป "หลายใบ" ในการยิงชีตครั้งเดียว (batch) — คืนจำนวนแถวที่แก้
+
+    ทำไมต้องมี: เดิมงานหมู่ (ลบทั้งกิจกรรม / เผยแพร่ทั้งกิจกรรม) วนเรียก _update_row_fields
+    ทีละใบ = อ่านหัวตาราง + find + update_cell หลายครั้ง **ต่อรูป 1 ใบ** → กิจกรรม 50 รูป
+    ยิงชีตหลายร้อยครั้งรวดเดียว ชนโควตา 60 ครั้ง/นาที (429) แน่นอน (บทเรียน #I/#J)
+    ตัวนี้อ่าน 2 ครั้ง (หัวตาราง + คอลัมน์ลิงก์) แล้วเขียนรวดเดียว → คงที่ไม่ว่ารูปกี่ใบ
+    """
+    links = [str(l).strip() for l in links if str(l).strip()]
+    if not links or not fields:
+        return 0
+    ws = get_worksheet()
+    header = _retry(lambda: ws.row_values(1))
+    if "ลิงก์รูป" not in header:
+        return 0
+    link_col = header.index("ลิงก์รูป") + 1
+    col_vals = _retry(lambda: ws.col_values(link_col))
+    # map ลิงก์ → เลขแถวจริงในชีต (ข้ามแถวหัวตาราง) — เจอซ้ำเอาแถวแรก
+    row_of = {}
+    for i, v in enumerate(col_vals[1:], start=2):
+        v = "" if v is None else str(v).strip()      # ช่องว่างบางทีมาเป็น None
+        if v and v not in row_of:
+            row_of[v] = i
+
+    updates, touched = [], 0
+    for link in links:
+        row = row_of.get(link)
+        if not row:
+            continue
+        touched += 1
+        for name, val in fields.items():
+            if name in header:
+                a1 = gspread.utils.rowcol_to_a1(row, header.index(name) + 1)
+                updates.append({"range": a1, "values": [[val]]})
+    if updates:
+        _retry(lambda: ws.batch_update(updates))
+        load_data.clear()
+    return touched
+
+
 def trash_photo(file_id: str, link: str, deleted_by: str = "") -> None:
     """
     ย้ายรูป 1 รายการเข้า "ถังขยะ" (กู้คืนได้ ~30 วัน):
@@ -335,11 +376,60 @@ def activity_status_label(row, now=None) -> str:
       - เปิดปกติ            → 'เปิด'
     """
     status = str(row.get("สถานะ", "")).strip()
-    if status != "เปิด":
+    if status == ACT_ARCHIVED:
+        return "📦 เก็บเข้าคลังแล้ว · รูปอยู่ในคลังภาพทั่วไป"
+    if status == ACT_DELETED:
+        return "🗑️ ลบแล้ว · รูปอยู่ในถังขยะ (กู้คืนได้ ~30 วัน)"
+    if status != ACT_OPEN:
+        # ปิดเองหรือถูก sync ปิดตอนครบ 7 วัน (#N) — บอกด้วยว่ายังเปิดให้ดูย้อนหลัง จะได้ไม่นึกว่ารูปหาย
+        if is_activity_expired(row.get("วันที่สร้าง"), now):
+            return "ปิดรับรูปแล้ว (ครบ 7 วัน) · ยังเปิดให้ดูย้อนหลัง"
         return status or "—"
     if is_activity_open(row, now):
         return "เปิด"
     return "ปิดรับรูปแล้ว (ครบ 7 วัน) · ยังเปิดให้ดูย้อนหลัง"
+
+
+def sync_auto_closed(df: pd.DataFrame = None, now=None) -> int:
+    """
+    (#N) กิจกรรมที่ครบ 7 วันแล้ว แต่ในชีตยังเป็น "เปิด" → เขียนสถานะเป็น "ปิด" ลงชีตจริง
+
+    เดิม auto-close เป็นแค่การ "คำนวณตอนใช้งาน" (ส่งรูปเข้าไม่ได้ แต่ชีตยังว่าเปิด) →
+    หน้าจัดการยังโชว์ปุ่ม "⏸️ ปิดกิจกรรม" ทำให้คนสร้างรู้สึกว่าต้องมากดปิดเองซ้ำ
+    หัวหน้าสั่ง (2026-07-24): "ครบ 7 วัน ปิดสถานะให้เลย"
+
+    - เขียนแบบ lazy: เรียกตอนเปิดหน้าจัดการกิจกรรม · **ไม่มีอะไรต้องปิดก็ไม่ยิงชีตเลย**
+      (ปกติจะเป็นแบบนี้เกือบทุกครั้ง → ไม่กระทบโควตา)
+    - ปิดพร้อมกันหลายอันด้วย batch_update ครั้งเดียว
+    - ไม่แตะ "การมองเห็น"/Shares → **คนดูอัลบั้มยังเปิดดูรูปเก่าได้เหมือนเดิม** (การดูผูกกับรหัสแชร์
+      /อัลบั้มสาธารณะ ไม่ได้ผูกกับสถานะเปิด-ปิด)
+    คืนจำนวนกิจกรรมที่เพิ่งถูกปิดให้ (0 = ไม่ได้เขียนอะไร)
+    """
+    if df is None:
+        df = load_activities()
+    if df.empty or "สถานะ" not in df.columns or "activity_id" not in df.columns:
+        return 0
+    stale = [
+        str(r["activity_id"]) for _, r in df.iterrows()
+        if str(r.get("สถานะ", "")).strip() == ACT_OPEN
+        and is_activity_expired(r.get("วันที่สร้าง"), now)
+    ]
+    if not stale:
+        return 0
+
+    ws = get_activities_ws()
+    ids = _retry(lambda: ws.col_values(1))          # อ่านคอลัมน์ activity_id ครั้งเดียว
+    row_of = {str(v).strip(): i for i, v in enumerate(ids[1:], start=2)
+              if v is not None and str(v).strip()}
+    updates = [
+        {"range": gspread.utils.rowcol_to_a1(row_of[aid], 6), "values": [[ACT_CLOSED]]}
+        for aid in stale if aid in row_of
+    ]
+    if not updates:
+        return 0
+    _retry(lambda: ws.batch_update(updates))
+    load_activities.clear()
+    return len(updates)
 
 
 def nav_tabs(key: str, labels):
@@ -600,6 +690,18 @@ LOG_TAB = "Log"                                    # แท็บบันทึ
 LOG_HEADER = ["เวลา", "ผู้ทำ", "role", "การกระทำ", "รายละเอียด", "activity_id"]
 AUTO_CLOSE_DAYS = 7                                # กิจกรรมปิดอัตโนมัติเมื่อครบ 7 วันนับจากวันสร้าง
 
+# ค่าในคอลัมน์ "สถานะ" ของแท็บ Activities
+#   เปิด/ปิด = ของเดิม · เก็บเข้าคลัง (#P) และ ลบแล้ว (#Q) = เพิ่มใหม่ 2026-07-24
+#   ทั้ง 2 ค่าใหม่ "ไม่ใช่เปิด" → is_activity_open คืน False อยู่แล้ว (ส่งรูปเข้าไม่ได้)
+#   แต่ยัง **ไม่ลบแถวทิ้ง** เพราะหน้าคลังทั่วไป/ถังขยะ lookup ชื่อกิจกรรมจาก activity_id
+ACT_OPEN = "เปิด"
+ACT_CLOSED = "ปิด"
+ACT_ARCHIVED = "เก็บเข้าคลัง"                       # จบงานแล้ว รูปไปโผล่เป็นโฟลเดอร์ในคลังทั่วไป
+ACT_DELETED = "ลบแล้ว"                              # กดลบ → รูปลงถังขยะ 30 วัน กู้คืนได้
+# ต่อท้ายชื่อคนลบ ตอนที่รูปถูกทิ้งเพราะ "ลบทั้งกิจกรรม" (ไม่ใช่ลบทีละใบ)
+# → ตอนกู้คืนกิจกรรม จะกู้เฉพาะรูปที่ถูกทิ้งพร้อมกิจกรรม ไม่ไปปลุกรูปที่เจ้าของตั้งใจลบเองก่อนหน้า
+TRASH_BY_ACTIVITY = " (ลบกิจกรรม)"
+
 # การแชร์อัลบั้ม (Round 3): เจ้าของคุมว่าใครดูอัลบั้มได้
 VISIBILITY_HEADER = "การมองเห็น"                     # คอลัมน์เพิ่มในแท็บ Activities
 VIS_PUBLIC = "ทุกคน"                                # อัลบั้มสาธารณะ — ใครก็ดูได้
@@ -734,32 +836,145 @@ def set_activity_status(activity_id, status):
         load_activities.clear()
 
 
-def delete_activity(activity_id):
-    """
-    ลบกิจกรรม "ถาวร" (สำหรับ superuser เท่านั้น — ปุ่มอยู่เฉพาะหน้า superuser):
-      1) ลบรูปทุกใบของกิจกรรมนี้ — ไฟล์ใน Drive + แถวใน Sheet1 (ผ่าน delete_photo)
-      2) ลบแถวกิจกรรมในแท็บ Activities (คอลัมน์ 1 = activity_id)
-    คืน "จำนวนรูปที่ลบ" ไว้แจ้งผล. หารูปจากคอลัมน์ activity_id ใน Sheet1
-    """
+def _activity_photo_rows(activity_id, include_trashed: bool = False) -> pd.DataFrame:
+    """แถวรูปทั้งหมดของกิจกรรมนี้ใน Sheet1 (ค่าเริ่มต้น = เฉพาะที่ยังไม่อยู่ในถังขยะ)"""
     activity_id = str(activity_id).strip()
     df = load_data()
-    deleted = 0
-    if not df.empty and ACTIVITY_ID_HEADER in df.columns and "ลิงก์รูป" in df.columns:
-        mine = df[df[ACTIVITY_ID_HEADER].astype(str).str.strip() == activity_id]
-        for link in mine["ลิงก์รูป"].tolist():
-            # delete_photo หาแถวจาก "ลิงก์" ใหม่ทุกครั้ง → เลขแถวเลื่อนหลังลบก็ไม่พลาด
-            delete_photo(extract_file_id(link), link)
-            deleted += 1
+    if df.empty or ACTIVITY_ID_HEADER not in df.columns or "ลิงก์รูป" not in df.columns:
+        return pd.DataFrame()
+    mine = df[df[ACTIVITY_ID_HEADER].astype(str).str.strip() == activity_id]
+    if mine.empty or include_trashed:
+        return mine.copy()
+    return mine[_not_trashed_mask(mine)].copy()
 
-    # ลบแถวกิจกรรมในแท็บ Activities
-    aws = get_activities_ws()
-    row = _find_row(aws, activity_id, 1)
-    if row and row > 1:  # กันเผลอลบแถวหัวตาราง (แถว 1)
-        _retry(lambda: aws.delete_rows(row))
 
-    load_data.clear()
-    load_activities.clear()
-    return deleted
+def archive_activity(activity_id) -> int:
+    """
+    (#P) "เก็บเข้าคลัง" = จบกิจกรรมแบบไม่มีอะไรหาย — ปุ่มหลักตอนงานจบ
+
+      1) เผยแพร่รูปทุกใบของกิจกรรมเข้าคลังทั่วไปทีเดียว (ตั้งคอลัมน์ 'เผยแพร่' = ใช่)
+         → ไปโผล่เป็น **โฟลเดอร์ชื่อกิจกรรม** ในหน้าคลังภาพ (กลไกเดิมของปุ่มเผยแพร่รายใบ)
+      2) ตั้งสถานะกิจกรรมเป็น 'เก็บเข้าคลัง' → หายจากรายการจัดการ (ตัวกรอง #O) + ส่งรูปเข้าไม่ได้
+
+    **ไม่ลบแถวกิจกรรม** เพราะชื่อโฟลเดอร์ในคลังทั่วไป lookup จาก activity_id → ชื่อกิจกรรม
+    ถ้าลบแถวจริงโฟลเดอร์จะกลายเป็นรหัสยาวๆ อ่านไม่รู้เรื่อง
+    คืนจำนวนรูปที่เผยแพร่
+    """
+    activity_id = str(activity_id).strip()
+    mine = _activity_photo_rows(activity_id)
+    n = 0
+    if not mine.empty:
+        n = _batch_set_photo_fields(mine["ลิงก์รูป"].tolist(), {PUBLISHED_HEADER: PUBLISHED_YES})
+    set_activity_status(activity_id, ACT_ARCHIVED)
+    return n
+
+
+def trash_activity_photos(activity_id, deleted_by: str = "") -> int:
+    """
+    ย้ายรูปทุกใบของกิจกรรมเข้าถังขยะ (Drive trashed=True + ทำเครื่องหมายในชีตแบบ batch)
+    ชื่อคนลบต่อท้ายด้วย TRASH_BY_ACTIVITY ไว้ให้ restore_activity รู้ว่าใบไหนถูกทิ้งพร้อมกิจกรรม
+    คืนจำนวนรูปที่ย้าย
+    """
+    mine = _activity_photo_rows(activity_id)
+    if mine.empty:
+        return 0
+    links = mine["ลิงก์รูป"].tolist()
+    service = None
+    try:
+        service = get_drive_service()
+    except Exception:
+        pass
+    if service is not None:
+        for link in links:
+            fid = extract_file_id(link)
+            if not fid:
+                continue
+            try:
+                _retry(lambda f=fid: service.files().update(
+                    fileId=f, body={"trashed": True}).execute(num_retries=5))
+            except Exception:
+                pass      # ไฟล์อาจถูกลบไปแล้ว — ไปทำเครื่องหมายในชีตต่อ
+    return _batch_set_photo_fields(links, {
+        STATUS_HEADER: TRASH_STATUS,
+        DELETED_AT_HEADER: _now_str(),
+        DELETED_BY_HEADER: f"{deleted_by}{TRASH_BY_ACTIVITY}",
+    })
+
+
+def delete_activity(activity_id, deleted_by: str = ""):
+    """
+    (#Q) ลบกิจกรรม = **ลงถังขยะ 30 วัน** (เดิมลบถาวรกู้คืนไม่ได้ — หัวหน้าสั่งให้กดพลาดแล้วกู้ได้)
+
+      1) รูปทุกใบ → ถังขยะ (Drive ล้างเองเมื่อครบ 30 วัน · กู้คืนก่อนครบกำหนดได้)
+      2) แถวกิจกรรม → ตั้งสถานะ 'ลบแล้ว' (ซ่อนจากรายการจัดการ) **ไม่ลบแถวจริง**
+         เพราะถ้าลบแถว ป้ายชื่อกิจกรรมของรูปในถังขยะจะหาย กู้คืนแล้วงงว่ารูปของงานไหน
+    คืน "จำนวนรูปที่ย้ายเข้าถังขยะ"
+    """
+    activity_id = str(activity_id).strip()
+    moved = trash_activity_photos(activity_id, deleted_by)
+    set_activity_status(activity_id, ACT_DELETED)
+    return moved
+
+
+def restore_activity(activity_id, status=None) -> int:
+    """
+    กู้กิจกรรมที่ 'ลบแล้ว' / เอา 'เก็บเข้าคลัง' กลับมาจัดการ — ตั้งสถานะกลับเป็น 'ปิด'
+    (กลับมาเป็น "ปิด" ไม่ใช่ "เปิด" เพื่อไม่ให้กิจกรรมเก่ากลับมารับรูปเองโดยไม่ตั้งใจ
+     อยากรับรูปต่อค่อยกด "▶️ เปิดกิจกรรม" อีกที)
+
+    ถ้าเป็นการกู้จาก 'ลบแล้ว' จะกู้รูปที่ถูกทิ้งพร้อมกิจกรรมกลับมาด้วย (ดูจากคำต่อท้ายใน 'ลบโดย')
+    → ไม่ไปปลุกรูปที่เจ้าของตั้งใจลบทีละใบก่อนหน้า  คืนจำนวนรูปที่กู้กลับมา
+    """
+    activity_id = str(activity_id).strip()
+    restored = 0
+    df = load_data()
+    has_cols = {DELETED_BY_HEADER, ACTIVITY_ID_HEADER, STATUS_HEADER, "ลิงก์รูป"} <= set(df.columns)
+    if not df.empty and has_cols:
+        mine = df[(df[ACTIVITY_ID_HEADER].astype(str).str.strip() == activity_id)
+                  & (df[DELETED_BY_HEADER].astype(str).str.endswith(TRASH_BY_ACTIVITY))
+                  & (df[STATUS_HEADER].astype(str).str.strip() == TRASH_STATUS)]
+        if not mine.empty:
+            links = mine["ลิงก์รูป"].tolist()
+            try:
+                service = get_drive_service()
+                for link in links:
+                    fid = extract_file_id(link)
+                    if not fid:
+                        continue
+                    try:
+                        _retry(lambda f=fid: service.files().update(
+                            fileId=f, body={"trashed": False}).execute(num_retries=5))
+                    except Exception:
+                        pass    # เกิน 30 วัน Google ลบไฟล์จริงไปแล้ว — ล้างเครื่องหมายในชีตต่อ
+            except Exception:
+                pass
+            restored = _batch_set_photo_fields(links, {
+                STATUS_HEADER: "", DELETED_AT_HEADER: "", DELETED_BY_HEADER: "",
+            })
+    set_activity_status(activity_id, status or ACT_CLOSED)
+    return restored
+
+
+def filter_activities(df: pd.DataFrame, choice: str, now=None) -> pd.DataFrame:
+    """
+    (#O) กรองรายการกิจกรรมตามตัวเลือกในหน้าจัดการ:
+      ACT_OPEN     = เปิดอยู่จริง (สถานะเปิด + ยังไม่ครบ 7 วัน)  ← ค่าเริ่มต้น กันรายการยาว
+      ACT_CLOSED   = ปิดแล้ว (รวมที่ครบ 7 วัน) แต่ยังไม่ถูกเก็บเข้าคลัง/ลบ
+      ACT_ARCHIVED = เก็บเข้าคลังแล้ว
+      อื่นๆ ("ทั้งหมด") = ไม่กรอง (เห็นทุกอันรวมที่ลบแล้ว — ไว้กดกู้คืน)
+    """
+    if df.empty or "สถานะ" not in df.columns:
+        return df
+    status = df["สถานะ"].astype(str).str.strip()
+    if choice == ACT_OPEN:
+        return df[df.apply(lambda r: is_activity_open(r, now), axis=1)].copy()
+    if choice == ACT_ARCHIVED:
+        return df[status == ACT_ARCHIVED].copy()
+    if choice == ACT_CLOSED:
+        keep = (~status.isin([ACT_ARCHIVED, ACT_DELETED])) & \
+               (~df.apply(lambda r: is_activity_open(r, now), axis=1))
+        return df[keep].copy()
+    return df.copy()
 
 
 # ---------- การแชร์อัลบั้ม (visibility + Shares) ----------
