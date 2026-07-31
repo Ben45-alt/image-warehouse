@@ -181,8 +181,10 @@ def _render_activities(username):
                 set_activity_join(aid, other)
                 st.rerun()
 
-        # ปุ่มตอนจบกิจกรรม: 📦 เก็บเข้าคลัง (หลัก) · 🗑️ ลบ → ถังขยะ 30 วัน (รอง)
-        render_activity_end_actions(a, n, "adm", username, "admin", delete_needs_empty=True)
+        # ปุ่มตอนจบกิจกรรม — admin ได้แค่ 🗑️ ลบ (กิจกรรมที่ยังไม่มีรูป) → ถังขยะ 30 วัน
+        # "เก็บเข้าคลัง" ไม่ให้สิทธิ์ admin เพราะเป็นการเอารูปไปโชว์ในคลังภาพทั่วไปที่คนทั้งบริษัทเห็น
+        render_activity_end_actions(a, n, "adm", username, "admin",
+                                    delete_needs_empty=True, can_archive=False)
 
         # กล่องแชร์อัลบั้ม (ทุกคน/เฉพาะคน + รายชื่อคนดู + รหัสส่วนตัว)
         render_share_panel(aid, str(a["ชื่อกิจกรรม"]), "adm")
@@ -415,7 +417,8 @@ def render_activity_filter(key: str) -> str:
                     help="ที่ปิด/เก็บเข้าคลัง/ลบแล้ว ถูกซ่อนไว้กันรายการยาว — เลือก 'ทั้งหมด' เพื่อดูทุกอัน")
 
 
-def render_activity_end_actions(a, n, key_prefix, who, role, delete_needs_empty=False):
+def render_activity_end_actions(a, n, key_prefix, who, role,
+                                delete_needs_empty=False, can_archive=True):
     """
     ปุ่ม "ตอนจบกิจกรรม" ใช้ร่วมกันทั้งหน้า admin และ superuser — 2 ทางเลือกที่แยกกันชัด:
       ① 📦 เก็บเข้าคลัง (#P)  = จบงานปกติ **ไม่มีอะไรหาย** รูปไปรวมเป็นโฟลเดอร์ชื่อกิจกรรม
@@ -424,6 +427,8 @@ def render_activity_end_actions(a, n, key_prefix, who, role, delete_needs_empty=
 
     delete_needs_empty=True (หน้า admin) = ลบได้เฉพาะกิจกรรมที่ยังไม่มีรูป — ของเดิม กันเผลอ
     ลบรูปลูกน้องหลุดมือ (กิจกรรมที่มีรูปต้องให้ superuser ลบ)
+    can_archive=False (หน้า admin) = ไม่ให้สิทธิ์เก็บเข้าคลัง — การเอารูปกิจกรรมออกไปโชว์ใน
+    "คลังภาพทั่วไป" ที่คนทั้งบริษัทเห็น ควรเป็นการตัดสินใจของผู้ดูแลระบบเท่านั้น
     """
     aid = str(a["activity_id"])
     name = str(a["ชื่อกิจกรรม"])
@@ -431,6 +436,9 @@ def render_activity_end_actions(a, n, key_prefix, who, role, delete_needs_empty=
 
     # กิจกรรมที่เก็บเข้าคลัง/ลบแล้ว → เหลือปุ่มเดียวคือเอากลับมาจัดการ
     if status in (ACT_ARCHIVED, ACT_DELETED):
+        if status == ACT_ARCHIVED and not can_archive:
+            st.caption("📦 เก็บเข้าคลังแล้ว — ถ้าต้องเอากลับมาจัดการ แจ้งผู้ดูแลระบบ")
+            return
         back = "♻️ กู้คืนกิจกรรม" if status == ACT_DELETED else "♻️ เอากลับมาจัดการ"
         if st.button(back, key=f"{key_prefix}_unarchive_{aid}", width="stretch"):
             try:
@@ -443,15 +451,16 @@ def render_activity_end_actions(a, n, key_prefix, who, role, delete_needs_empty=
                 st.error(f"กู้คืนไม่สำเร็จ: {e}")
         return
 
-    c_arch, c_del = st.columns(2)
+    c_arch, c_del = st.columns(2) if can_archive else (None, st.columns(1)[0])
 
-    # ---------- ① เก็บเข้าคลัง ----------
+    # ---------- ① เก็บเข้าคลัง (เฉพาะผู้ดูแลระบบ) ----------
     arch_key = f"{key_prefix}_confirm_arch_{aid}"
-    if c_arch.button("📦 เก็บเข้าคลัง", key=f"{key_prefix}_arch_{aid}", width="stretch",
-                     help="จบกิจกรรม แล้วย้ายรูปทั้งหมดไปเก็บเป็นโฟลเดอร์ในคลังภาพทั่วไป (ไม่มีรูปหาย)"):
+    if can_archive and c_arch.button(
+            "📦 เก็บเข้าคลัง", key=f"{key_prefix}_arch_{aid}", width="stretch",
+            help="จบกิจกรรม แล้วย้ายรูปทั้งหมดไปเก็บเป็นโฟลเดอร์ในคลังภาพทั่วไป (ไม่มีรูปหาย)"):
         st.session_state[arch_key] = True
         st.rerun()
-    if st.session_state.get(arch_key):
+    if can_archive and st.session_state.get(arch_key):
         st.info(
             f"📦 เก็บกิจกรรม **{name}** เข้าคลัง? รูป **{n} ใบ** จะไปโผล่เป็นโฟลเดอร์ "
             f"“{name}” ในคลังภาพทั่วไป (ดู/ดาวน์โหลดได้ ไม่มีรูปหาย) · กิจกรรมจะถูกซ่อนจากรายการนี้ "
@@ -474,9 +483,11 @@ def render_activity_end_actions(a, n, key_prefix, who, role, delete_needs_empty=
 
     # ---------- ② ลบกิจกรรม → ถังขยะ 30 วัน ----------
     del_key = f"{key_prefix}_confirm_delact_{aid}"
+    busy_hint = ("มีรูปแล้ว ลบไม่ได้ — ใช้ '📦 เก็บเข้าคลัง' แทน" if can_archive
+                 else "มีรูปแล้ว ลบไม่ได้ — แจ้งผู้ดูแลระบบให้จัดการแทน")
     if delete_needs_empty and n > 0:
         c_del.button("🗑️ ลบกิจกรรม", key=f"{key_prefix}_delact_{aid}", width="stretch",
-                     disabled=True, help="มีรูปแล้ว ลบไม่ได้ — ใช้ '📦 เก็บเข้าคลัง' หรือแจ้ง superuser")
+                     disabled=True, help=busy_hint)
     elif c_del.button("🗑️ ลบกิจกรรม", key=f"{key_prefix}_delact_{aid}", width="stretch",
                       help="รูปจะไปอยู่ถังขยะ 30 วัน กู้คืนได้"):
         st.session_state[del_key] = True
@@ -494,7 +505,7 @@ def render_activity_end_actions(a, n, key_prefix, who, role, delete_needs_empty=
                 if delete_needs_empty:
                     load_data.clear()
                     if _count_photos(load_data(), aid) > 0:
-                        st.error("❌ มีรูปเข้ามาในกิจกรรมนี้แล้ว — ลบไม่ได้ ใช้ '📦 เก็บเข้าคลัง' แทน")
+                        st.error(f"❌ มีรูปเข้ามาในกิจกรรมนี้แล้ว — {busy_hint}")
                         st.session_state.pop(del_key, None)
                         return
                 with st.spinner("กำลังย้ายรูปเข้าถังขยะ..."):

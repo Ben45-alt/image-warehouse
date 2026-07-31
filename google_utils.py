@@ -955,6 +955,27 @@ def restore_activity(activity_id, status=None) -> int:
     return restored
 
 
+def search_activities(df: pd.DataFrame, term: str) -> pd.DataFrame:
+    """
+    ค้นหากิจกรรมจาก **ชื่อกิจกรรม หรือ คนสร้าง** (ไม่สนตัวพิมพ์เล็ก-ใหญ่ · ตัดช่องว่างหัวท้ายให้)
+    คำค้นว่าง = คืนทั้งหมดเหมือนเดิม
+    """
+    term = str(term or "").strip().lower()
+    if not term or df.empty:
+        return df
+    name = df["ชื่อกิจกรรม"].astype(str).str.lower() if "ชื่อกิจกรรม" in df.columns else None
+    who = df["คนสร้าง"].astype(str).str.lower() if "คนสร้าง" in df.columns else None
+    if name is None and who is None:
+        return df
+    hit = None
+    for col in (name, who):
+        if col is None:
+            continue
+        m = col.str.contains(term, regex=False)
+        hit = m if hit is None else (hit | m)
+    return df[hit].copy()
+
+
 def filter_activities(df: pd.DataFrame, choice: str, now=None) -> pd.DataFrame:
     """
     (#O) กรองรายการกิจกรรมตามตัวเลือกในหน้าจัดการ:

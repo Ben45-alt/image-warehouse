@@ -27,7 +27,7 @@ from google_utils import (
     EMAIL_HEADER, RESET_REQ_HEADER, USER_ACTIVE, USER_PENDING,
     set_activity_join, JOIN_HEADER, JOIN_OPEN, JOIN_CODE,
     set_activity_status, is_activity_open, is_activity_expired,
-    sync_auto_closed, filter_activities, AUTO_CLOSE_DAYS,
+    sync_auto_closed, filter_activities, search_activities, AUTO_CLOSE_DAYS,
     ACT_OPEN, ACT_CLOSED, ACT_ARCHIVED, ACT_DELETED,
     activity_status_label, nav_tabs,
     get_storage_quota, get_image_bytes, get_thumbnail, extract_file_id,
@@ -233,10 +233,24 @@ def _render_manage_activities():
         return
 
     total = len(df)
-    df = filter_activities(df, render_activity_filter("su_act_filter"))
-    if df.empty:
-        st.info(f"ไม่มีกิจกรรมในกลุ่มนี้ (ในระบบมีทั้งหมด {total} กิจกรรม — เลือก 'ทั้งหมด' เพื่อดูทุกอัน)")
-        return
+    term = st.text_input(
+        "🔍 ค้นหากิจกรรม", key="su_act_search",
+        placeholder="พิมพ์ชื่อกิจกรรม หรือชื่อคนสร้าง",
+        help="ค้นหาแล้วจะหาจากทุกกิจกรรมในระบบ (ข้ามตัวกรองด้านล่างให้ จะได้ไม่ต้องมานั่งเดาว่าอยู่กลุ่มไหน)",
+    ).strip()
+
+    if term:
+        # กำลังค้นหา = ไม่กรองตามสถานะ ไม่งั้นพิมพ์ชื่อกิจกรรมที่ปิดแล้วจะไม่เจอ งงเปล่าๆ
+        df = search_activities(df, term)
+        if df.empty:
+            st.info(f"ไม่พบกิจกรรมที่ตรงกับ “{term}” — ลองพิมพ์สั้นลง หรือเช็คตัวสะกดดูครับ")
+            return
+        st.caption(f"🔍 ผลการค้นหา “{term}” — พบ {len(df)} กิจกรรม (ค้นจากทั้งหมด {total} กิจกรรม)")
+    else:
+        df = filter_activities(df, render_activity_filter("su_act_filter"))
+        if df.empty:
+            st.info(f"ไม่มีกิจกรรมในกลุ่มนี้ (ในระบบมีทั้งหมด {total} กิจกรรม — เลือก 'ทั้งหมด' เพื่อดูทุกอัน)")
+            return
 
     # นับเฉพาะรูปที่ยังไม่อยู่ในถังขยะ — ตรงกับจำนวนที่จะถูกย้ายเข้าถังขยะ/เผยแพร่จริงตอนกดปุ่ม
     counts = _counts_by_activity(_activity_photos(load_active_data()))
